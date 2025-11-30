@@ -1,5 +1,6 @@
 flask
 twilio
-openai
-gunicorn
 openai>=1.0.0
+httpx
+
+
