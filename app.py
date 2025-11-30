@@ -41,22 +41,30 @@ def ivr_llm():
     user_text = speech
     print("Usuario dijo:", user_text)
 
-    # ---- AQUÍ ENTRA GPT ----
-    completion = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Eres un asistente telefónico de Nuxway Technology. "
-                    "Respondes en español, de forma breve, clara y amable. "
-                    "Si no entiendes algo, pide que lo repitan o aclaren."
-                )
-            },
-            {"role": "user", "content": user_text}
-        ]
-    )
-    respuesta_llm = completion.choices[0].message.content
+    # ---- AQUÍ ENTRA GPT, CON TRY/EXCEPT ----
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",  # modelo estable y disponible
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un asistente telefónico de Nuxway Technology. "
+                        "Respondes en español, de forma breve, clara y amable. "
+                        "Si no entiendes algo, pide que lo repitan o aclaren."
+                    )
+                },
+                {"role": "user", "content": user_text}
+            ]
+        )
+        respuesta_llm = completion.choices[0].message.content
+    except Exception as e:
+        # Si GPT falla, no queremos que se caiga la app
+        print("Error al llamar a GPT:", e)
+        respuesta_llm = (
+            "Lo siento, en este momento tengo un problema interno para procesar tu consulta. "
+            "Por favor, intenta de nuevo más tarde."
+        )
 
     # Respuesta al usuario por voz
     vr.say(
@@ -74,4 +82,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(port=5000)
-
