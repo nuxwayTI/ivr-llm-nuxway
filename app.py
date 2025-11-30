@@ -20,7 +20,7 @@ def ivr_llm():
             language="es-ES",
             action="/ivr-llm",   # Twilio vuelve a llamar aquí
             method="POST",
-            timeout=5
+            timeout=6
         )
         gather.say(
             language="es-ES",
@@ -65,7 +65,6 @@ def ivr_llm():
         text=respuesta_llm
     )
 
-    # Si quisieras seguir conversando en loop, aquí podrías agregar otro Gather.
     return Response(str(vr), mimetype="text/xml")
 
 
