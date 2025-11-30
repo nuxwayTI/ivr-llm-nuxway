@@ -12,9 +12,11 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# DESTINO DEL AGENTE (TU PBX → EXTENSIÓN 4001)
-AGENT_SIP = "sip:4001@nuxway.sip.twilio.com:10495;transport=UDP"
-AGENT_NUMBER = ""   # no usaremos número telefónico
+# ======= CONFIGURACIÓN DE TRANSFERENCIA A AGENTE =======
+# Por ahora usamos SOLO número telefónico (más simple y seguro).
+# Cambia este número por tu celular o un DID que entre a tu PBX.
+AGENT_SIP = ""                         # desactivado por el momento
+AGENT_NUMBER = "+591XXXXXXXXX"         # <-- CAMBIA ESTO
 
 
 def llamar_gpt(user_text: str) -> str:
@@ -36,7 +38,7 @@ def llamar_gpt(user_text: str) -> str:
                     "Eres un asistente telefónico de Nuxway Technology. "
                     "Respondes siempre en español, de forma breve, clara y amable. "
                     "Si el usuario pide hablar con un humano o agente, "
-                    "solo dile que lo transferirás y no des más detalles técnicos."
+                    "puedes decirle que lo transferirás con gusto."
                 ),
             },
             {"role": "user", "content": user_text}
@@ -64,25 +66,25 @@ def llamar_gpt(user_text: str) -> str:
 
 
 def transferir_a_agente(vr: VoiceResponse) -> Response:
-    """Genera TwiML para transferir a un agente de la PBX."""
+    """Genera TwiML para transferir a un agente humano."""
     vr.say(
         "Te voy a comunicar con un agente humano. Por favor espera.",
         language="es-ES",
         voice="Polly.Lupe",
     )
 
-    # Prioridad: transferir vía SIP
+    # 1) Si algún día quieres volver a SIP directo, aquí iría dial.sip(AGENT_SIP)
     if AGENT_SIP and AGENT_SIP.startswith("sip:"):
         dial = vr.dial()
         dial.sip(AGENT_SIP)
 
-    # Alternativa si usas número telefónico
+    # 2) Por ahora usamos número telefónico (recomendado para pruebas)
     elif AGENT_NUMBER:
         vr.dial(AGENT_NUMBER)
 
     else:
         vr.say(
-            "No tengo un destino configurado para agentes.",
+            "No tengo un destino configurado para agentes en este momento.",
             language="es-ES",
             voice="Polly.Lupe"
         )
@@ -100,7 +102,7 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # PRIMERA VUELTA: pedir mensaje o DTMF
+    # 1) Primera vuelta: pedir mensaje o DTMF
     if not speech and not digits:
         gather = Gather(
             input="speech dtmf",
@@ -126,14 +128,13 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # DETECTAR si el usuario pidió un humano
+    # 2) Detectar si pidió humano
     texto = (speech or "").lower()
-
     if (digits == "0") or ("agente" in texto) or ("humano" in texto):
         app.logger.info("⚡ Usuario pidió transferir a un agente humano.")
         return transferir_a_agente(vr)
 
-    # GPT entra aquí
+    # 3) GPT para conversación normal
     respuesta = llamar_gpt(speech or "")
     app.logger.info(f"Respuesta GPT: {respuesta}")
 
@@ -143,7 +144,7 @@ def ivr_llm():
         voice="Polly.Lupe",
     )
 
-    # Segundo gather para conversación continua
+    # 4) Segundo gather para seguir conversando
     gather2 = Gather(
         input="speech dtmf",
         num_digits=1,
@@ -170,5 +171,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
-
