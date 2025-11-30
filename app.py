@@ -8,7 +8,7 @@ def ivr_llm():
     speech = request.values.get("SpeechResult")
     vr = VoiceResponse()
 
-    # 1) Primera vuelta (no hay speech aún) -> pedimos que hable
+    # 1) PRIMERA VUELTA: no hay speech aún -> pedir que hable
     if not speech:
         gather = Gather(
             input="speech",
@@ -27,11 +27,11 @@ def ivr_llm():
         vr.say(
             language="es-ES",
             voice="Polly.Lupe",
-            text="No escuché ninguna respuesta. Hasta luego."
+            text="No escuché nada. Hasta luego."
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) Segunda vuelta: ya tenemos SpeechResult -> responder SIN GPT
+    # 2) SEGUNDA VUELTA: ya tenemos SpeechResult -> responder sin GPT
     respuesta = f"Ok, te escuché decir: {speech}"
     vr.say(language="es-ES", voice="Polly.Lupe", text=respuesta)
 
@@ -40,7 +40,7 @@ def ivr_llm():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Nuxway IVR LLM - Running! (prueba sin GPT)"
+    return "Nuxway IVR LLM - Running! (sin GPT, modo prueba SpeechResult)"
 
 if __name__ == "__main__":
     app.run(port=5000)
