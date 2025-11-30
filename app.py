@@ -2,6 +2,10 @@ from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from openai import OpenAI
 import os
+import openai
+
+print("Versión OpenAI:", openai.__version__)
+
 
 app = Flask(__name__)
 
