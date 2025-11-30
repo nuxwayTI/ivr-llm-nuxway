@@ -12,8 +12,8 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# DESTINO DEL AGENTE (TU PBX → EXTENSIÓN 4000)
-AGENT_SIP = "sip:4000@nuxway.sip.twilio.com:10495;transport=UDP"
+# DESTINO DEL AGENTE (TU PBX → EXTENSIÓN 4001)
+AGENT_SIP = "sip:4001@nuxway.sip.twilio.com:10495;transport=UDP"
 AGENT_NUMBER = ""   # no usaremos número telefónico
 
 
