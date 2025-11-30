@@ -3,12 +3,12 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 
 app = Flask(__name__)
 
-@app.route("/ivr-llm", methods=["POST"])
+@app.route("/ivr-llm", methods=["GET", "POST"])
 def ivr_llm():
     speech = request.values.get("SpeechResult")
     vr = VoiceResponse()
 
-    # 1) PRIMERA VEZ: todavía no hay texto del usuario
+    # Si todavía no hay SpeechResult (primera vez)
     if not speech:
         gather = Gather(
             input="speech",
@@ -31,7 +31,7 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) SEGUNDA VEZ: de momento solo repetimos lo que dijo el usuario
+    # Si ya hay SpeechResult, solo repetimos lo que dijo el usuario
     texto = f"Dijiste: {speech}"
     vr.say(language="es-ES", voice="Polly.Lupe", text=texto)
     return Response(str(vr), mimetype="text/xml")
@@ -39,8 +39,9 @@ def ivr_llm():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Nuxway IVR LLM - Running (sin GPT)."
+    return "Nuxway IVR LLM - Running (test sin GPT)."
 
 if __name__ == "__main__":
     app.run(port=5000)
+
 
