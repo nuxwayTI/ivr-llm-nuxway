@@ -9,16 +9,11 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# ==========================================================
-# CARGA LA API KEY Y LIMPIA SALTOS DE LÍNEA (\n)
-# ==========================================================
+# CARGA LA API KEY Y LIMPIA SALTOS DE LÍNEA
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
-# ==========================================================
-# FUNCIÓN PARA LLAMAR A GPT (USAMOS REQUESTS, NO OPENAI SDK)
-# ==========================================================
 def llamar_gpt(user_text: str) -> str:
     if not OPENAI_API_KEY:
         app.logger.error("OPENAI_API_KEY no está configurada en Render.")
@@ -50,7 +45,6 @@ def llamar_gpt(user_text: str) -> str:
     try:
         resp = requests.post(OPENAI_URL, headers=headers, json=data, timeout=10)
 
-        # Logs IMPORTANTES
         app.logger.info(f"Status OpenAI: {resp.status_code}")
         app.logger.info(f"Cuerpo OpenAI: {resp.text}")
 
@@ -68,16 +62,13 @@ def llamar_gpt(user_text: str) -> str:
         return "Ocurrió un error interno al procesar la respuesta. Intenta nuevamente."
 
 
-# ==========================================================
-# RUTA PRINCIPAL DEL IVR
-# ==========================================================
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
     speech = request.values.get("SpeechResult")
     app.logger.info(f"SpeechResult recibido: {speech}")
     vr = VoiceResponse()
 
-    # Primera vuelta: pedir texto al usuario
+    # 1) Primera vuelta: pedirle al usuario que hable
     if not speech:
         gather = Gather(
             input="speech",
@@ -86,31 +77,33 @@ def ivr_llm():
             method="POST",
             timeout=5
         )
+        # 👇 AQUÍ: mensaje como PRIMER argumento
         gather.say(
+            "Hola, soy un asistente de Nuxway Technology con inteligencia artificial. ¿En qué puedo ayudarte?",
             language="es-ES",
             voice="Polly.Lupe",
-            text="Hola, soy un asistente de Nuxway Technology con inteligencia artificial. ¿En qué puedo ayudarte?"
         )
         vr.append(gather)
 
         vr.say(
+            "No escuché ninguna respuesta. Hasta luego.",
             language="es-ES",
             voice="Polly.Lupe",
-            text="No escuché ninguna respuesta. Hasta luego."
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # Ya tenemos lo que dijo el usuario → llamar a GPT
+    # 2) Ya tenemos lo que dijo el usuario → GPT
     respuesta = llamar_gpt(speech)
     app.logger.info(f"Respuesta GPT: {respuesta}")
 
+    # 👇 AQUÍ: mensaje como PRIMER argumento
     vr.say(
+        respuesta,
         language="es-ES",
         voice="Polly.Lupe",
-        text=respuesta
     )
 
-    # Segundo gather para continuar la conversación
+    # 3) Segundo gather para seguir la conversación
     gather2 = Gather(
         input="speech",
         language="es-ES",
@@ -119,9 +112,9 @@ def ivr_llm():
         timeout=5
     )
     gather2.say(
+        "¿Puedo ayudarte en algo más?",
         language="es-ES",
         voice="Polly.Lupe",
-        text="¿Puedo ayudarte en algo más?"
     )
     vr.append(gather2)
 
@@ -135,6 +128,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
 
