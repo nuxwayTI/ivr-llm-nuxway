@@ -4,23 +4,22 @@ import os
 import logging
 import requests
 
+# Logs visibles en Render
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# ==========================================================
+# CARGA LA API KEY Y LIMPIA SALTOS DE LÍNEA (\n)
+# ==========================================================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
 # ==========================================================
-# FUNCIÓN GPT - ESTA ES LA QUE TIENES QUE ACTUALIZAR
+# FUNCIÓN PARA LLAMAR A GPT (USAMOS REQUESTS, NO OPENAI SDK)
 # ==========================================================
 def llamar_gpt(user_text: str) -> str:
-    """
-    Llamada directa a OpenAI usando requests en vez del SDK.
-    Esto nos permite ver el código de error y el cuerpo completo.
-    """
-
     if not OPENAI_API_KEY:
         app.logger.error("OPENAI_API_KEY no está configurada en Render.")
         return "Hay un problema interno con la configuración de la inteligencia artificial."
@@ -37,20 +36,21 @@ def llamar_gpt(user_text: str) -> str:
                 "role": "system",
                 "content": (
                     "Eres un asistente telefónico de Nuxway Technology. "
-                    "Respondes siempre en español, de forma breve, clara y amable."
+                    "Respondes siempre en español, de forma breve, clara y amable. "
+                    "Hablas como un IVR, con frases cortas y fáciles de entender."
                 ),
             },
             {
                 "role": "user",
                 "content": user_text
-            },
+            }
         ],
     }
 
     try:
         resp = requests.post(OPENAI_URL, headers=headers, json=data, timeout=10)
 
-        # Logs CLAVE para ver qué dice OpenAI realmente
+        # Logs IMPORTANTES
         app.logger.info(f"Status OpenAI: {resp.status_code}")
         app.logger.info(f"Cuerpo OpenAI: {resp.text}")
 
@@ -60,10 +60,10 @@ def llamar_gpt(user_text: str) -> str:
         j = resp.json()
         return j["choices"][0]["message"]["content"]
 
-    except requests.exceptions.RequestException as e:
+    except requests.exceptions.RequestException:
         app.logger.exception("Error de red llamando a OpenAI con requests:")
         return "Estoy teniendo problemas de conexión con la inteligencia artificial. Intenta nuevamente."
-    except Exception as e:
+    except Exception:
         app.logger.exception("Error inesperado procesando respuesta:")
         return "Ocurrió un error interno al procesar la respuesta. Intenta nuevamente."
 
@@ -77,6 +77,7 @@ def ivr_llm():
     app.logger.info(f"SpeechResult recibido: {speech}")
     vr = VoiceResponse()
 
+    # Primera vuelta: pedir texto al usuario
     if not speech:
         gather = Gather(
             input="speech",
@@ -91,6 +92,7 @@ def ivr_llm():
             text="Hola, soy un asistente de Nuxway Technology con inteligencia artificial. ¿En qué puedo ayudarte?"
         )
         vr.append(gather)
+
         vr.say(
             language="es-ES",
             voice="Polly.Lupe",
@@ -98,6 +100,7 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
+    # Ya tenemos lo que dijo el usuario → llamar a GPT
     respuesta = llamar_gpt(speech)
     app.logger.info(f"Respuesta GPT: {respuesta}")
 
@@ -107,6 +110,7 @@ def ivr_llm():
         text=respuesta
     )
 
+    # Segundo gather para continuar la conversación
     gather2 = Gather(
         input="speech",
         language="es-ES",
