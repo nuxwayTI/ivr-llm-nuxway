@@ -16,7 +16,7 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 # Por ahora usamos SOLO número telefónico (más simple y seguro).
 # Cambia este número por tu celular o un DID que entre a tu PBX.
 AGENT_SIP = ""                         # desactivado por el momento
-AGENT_NUMBER = "+591XXXXXXXXX"         # <-- CAMBIA ESTO
+AGENT_NUMBER = "+59144556677"         # <-- CAMBIA ESTO
 
 
 def llamar_gpt(user_text: str) -> str:
