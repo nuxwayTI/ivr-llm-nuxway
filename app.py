@@ -4,14 +4,15 @@ from openai import OpenAI
 import os
 import logging
 
-# Logs para ver qué pasa en Render
+# Logs visibles en Render
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# Cliente OpenAI - usa la variable de entorno OPENAI_API_KEY
+# Cliente OpenAI con la API key de Render
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url="https://api.openai.com/v1"   # IMPORTANTE: evita APIConnectionError
 )
 
 @app.route("/ivr-llm", methods=["POST"])
@@ -20,23 +21,22 @@ def ivr_llm():
     app.logger.info(f"SpeechResult recibido: {speech}")
     vr = VoiceResponse()
 
-    # 1) Primera vuelta: todavía no hay texto del usuario
+    # 1) Primera vuelta: Twilio aún no tiene texto
     if not speech:
         gather = Gather(
             input="speech",
             language="es-ES",
-            action="/ivr-llm",   # Twilio volverá a llamar a esta misma ruta
+            action="/ivr-llm",
             method="POST",
             timeout=5
         )
         gather.say(
             language="es-ES",
             voice="Polly.Lupe",
-            text="Hola, soy un asistente de Nuxway Technology con inteligencia artificial. ¿En qué puedo ayudarte?"
+            text="Hola, soy un asistente de Nuxway Technology. ¿En qué puedo ayudarte?"
         )
         vr.append(gather)
 
-        # Si el usuario no dice nada
         vr.say(
             language="es-ES",
             voice="Polly.Lupe",
@@ -44,7 +44,7 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) Ya tenemos SpeechResult → llamamos al LLM
+    # 2) Ya tenemos la frase del usuario → GPT
     try:
         completion = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -52,9 +52,8 @@ def ivr_llm():
                 {
                     "role": "system",
                     "content": (
-                        "Eres un asistente telefónico de Nuxway Technology. "
-                        "Respondes siempre en español, corto, claro y amable. "
-                        "Hablas como IVR: frases simples, sin párrafos largos."
+                        "Eres un IVR inteligente de Nuxway Technology. "
+                        "Respondes corto, claro, amable y siempre en español."
                     )
                 },
                 {"role": "user", "content": speech}
@@ -62,22 +61,24 @@ def ivr_llm():
         )
         respuesta = completion.choices[0].message.content
     except Exception as e:
-        app.logger.exception("Error llamando a OpenAI")
+        # Si GPT falla, evita que se caiga Twilio
+        app.logger.exception("ERROR llamando a GPT:")
         respuesta = (
-            "En este momento tengo problemas para conectarme "
-            "al motor de inteligencia artificial. Intenta de nuevo más tarde."
+            "Estoy experimentando problemas para conectarme con la inteligencia "
+            "artificial. Intenta nuevamente en unos momentos."
         )
 
-    app.logger.info(f"Respuesta LLM: {respuesta}")
+    # Log de la respuesta
+    app.logger.info(f"Respuesta GPT: {respuesta}")
 
-    # Respuesta hablada al usuario
+    # Responderle al usuario
     vr.say(
         language="es-ES",
         voice="Polly.Lupe",
         text=respuesta
     )
 
-    # 3) Segundo gather para seguir conversando (opcional)
+    # 3) Volver a escuchar al usuario para seguir conversando
     gather2 = Gather(
         input="speech",
         language="es-ES",
@@ -101,7 +102,6 @@ def home():
 
 
 if __name__ == "__main__":
-    # Para pruebas locales
     app.run(host="0.0.0.0", port=5000, debug=True)
 
 
