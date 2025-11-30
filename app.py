@@ -13,7 +13,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 # DESTINO DEL AGENTE (TU PBX → EXTENSIÓN 4000)
-AGENT_SIP = "sip:4000@nuxway.sip.twilio.com"
+AGENT_SIP = "sip:4000@nuxway.sip.twilio.com:10495;transport=UDP"
 AGENT_NUMBER = ""   # no usaremos número telefónico
 
 
