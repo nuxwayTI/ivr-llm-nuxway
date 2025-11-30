@@ -1,12 +1,7 @@
 from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
-from openai import OpenAI
-import os
 
 app = Flask(__name__)
-
-# Cliente de OpenAI usando la variable de entorno
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
@@ -18,7 +13,7 @@ def ivr_llm():
         gather = Gather(
             input="speech",
             language="es-ES",
-            action="/ivr-llm",   # Twilio vuelve a llamar aquí
+            action="/ivr-llm",
             method="POST",
             timeout=6
         )
@@ -29,7 +24,6 @@ def ivr_llm():
         )
         vr.append(gather)
 
-        # Si no dice nada
         vr.say(
             language="es-ES",
             voice="Polly.Lupe",
@@ -37,48 +31,16 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) SEGUNDA VEZ: Twilio ya nos mandó lo que dijo el usuario en SpeechResult
-    user_text = speech
-    print("Usuario dijo:", user_text)
-
-    # ---- AQUÍ ENTRA GPT, CON TRY/EXCEPT ----
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",  # modelo estable y disponible
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres un asistente telefónico de Nuxway Technology. "
-                        "Respondes en español, de forma breve, clara y amable. "
-                        "Si no entiendes algo, pide que lo repitan o aclaren."
-                    )
-                },
-                {"role": "user", "content": user_text}
-            ]
-        )
-        respuesta_llm = completion.choices[0].message.content
-    except Exception as e:
-        # Si GPT falla, no queremos que se caiga la app
-        print("Error al llamar a GPT:", e)
-        respuesta_llm = (
-            "Lo siento, en este momento tengo un problema interno para procesar tu consulta. "
-            "Por favor, intenta de nuevo más tarde."
-        )
-
-    # Respuesta al usuario por voz
-    vr.say(
-        language="es-ES",
-        voice="Polly.Lupe",
-        text=respuesta_llm
-    )
-
+    # 2) SEGUNDA VEZ: de momento solo repetimos lo que dijo el usuario
+    texto = f"Dijiste: {speech}"
+    vr.say(language="es-ES", voice="Polly.Lupe", text=texto)
     return Response(str(vr), mimetype="text/xml")
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Nuxway IVR LLM - Running!"
+    return "Nuxway IVR LLM - Running (sin GPT)."
 
 if __name__ == "__main__":
     app.run(port=5000)
+
