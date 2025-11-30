@@ -12,12 +12,9 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# DESTINO DEL AGENTE (elige una de las dos opciones)
-# Opción A: SIP hacia tu PBX / cola
-AGENT_SIP = "sip:cola-soporte@pbx.nuxway.com"  # <-- CAMBIA ESTO POR TU URI REAL
-
-# Opción B: número telefónico
-AGENT_NUMBER = "+5917XXXXXXX"  # <-- O deja esto en blanco si usarás SIP
+# DESTINO DEL AGENTE (TU PBX → EXTENSIÓN 4000)
+AGENT_SIP = "sip:4000@nuxway.sip.twilio.com"
+AGENT_NUMBER = ""   # no usaremos número telefónico
 
 
 def llamar_gpt(user_text: str) -> str:
@@ -38,14 +35,11 @@ def llamar_gpt(user_text: str) -> str:
                 "content": (
                     "Eres un asistente telefónico de Nuxway Technology. "
                     "Respondes siempre en español, de forma breve, clara y amable. "
-                    "Si el usuario pide hablar con un agente humano, "
-                    "respóndele que lo vas a transferir, pero no digas nada más especial."
+                    "Si el usuario pide hablar con un humano o agente, "
+                    "solo dile que lo transferirás y no des más detalles técnicos."
                 ),
             },
-            {
-                "role": "user",
-                "content": user_text
-            }
+            {"role": "user", "content": user_text}
         ],
     }
 
@@ -63,30 +57,34 @@ def llamar_gpt(user_text: str) -> str:
     except requests.exceptions.RequestException:
         app.logger.exception("Error de red llamando a OpenAI con requests:")
         return "Estoy teniendo problemas de conexión con la inteligencia artificial. Intenta nuevamente."
+
     except Exception:
         app.logger.exception("Error inesperado procesando respuesta:")
         return "Ocurrió un error interno al procesar la respuesta. Intenta nuevamente."
 
 
 def transferir_a_agente(vr: VoiceResponse) -> Response:
-    """Genera TwiML para transferir al agente (SIP o número)."""
+    """Genera TwiML para transferir a un agente de la PBX."""
     vr.say(
-        "Te voy a comunicar con un agente. Por favor espera.",
+        "Te voy a comunicar con un agente humano. Por favor espera.",
         language="es-ES",
         voice="Polly.Lupe",
     )
 
-    # Prioridad SIP; si no, número
+    # Prioridad: transferir vía SIP
     if AGENT_SIP and AGENT_SIP.startswith("sip:"):
         dial = vr.dial()
         dial.sip(AGENT_SIP)
+
+    # Alternativa si usas número telefónico
     elif AGENT_NUMBER:
         vr.dial(AGENT_NUMBER)
+
     else:
         vr.say(
-            "En este momento no tengo un número de agente configurado.",
+            "No tengo un destino configurado para agentes.",
             language="es-ES",
-            voice="Polly.Lupe",
+            voice="Polly.Lupe"
         )
 
     return Response(str(vr), mimetype="text/xml")
@@ -96,15 +94,17 @@ def transferir_a_agente(vr: VoiceResponse) -> Response:
 def ivr_llm():
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
+
     app.logger.info(f"SpeechResult recibido: {speech}")
     app.logger.info(f"Digits recibidos: {digits}")
+
     vr = VoiceResponse()
 
-    # 1) Primera vuelta: pedirle al usuario que hable o marque
+    # PRIMERA VUELTA: pedir mensaje o DTMF
     if not speech and not digits:
         gather = Gather(
-            input="speech dtmf",      # voz + teclas
-            num_digits=1,             # queremos una sola tecla (0)
+            input="speech dtmf",
+            num_digits=1,
             language="es-ES",
             action="/ivr-llm",
             method="POST",
@@ -112,8 +112,8 @@ def ivr_llm():
         )
         gather.say(
             "Hola, soy un asistente de Nuxway Technology con inteligencia artificial. "
-            "Puedes decirme en qué te ayudo, o si quieres hablar con un agente humano, "
-            "di la palabra 'agente' o presiona la tecla cero.",
+            "Puedes decirme cómo puedo ayudarte. "
+            "Si quieres hablar con un agente humano, di la palabra 'agente' o presiona la tecla cero.",
             language="es-ES",
             voice="Polly.Lupe",
         )
@@ -126,13 +126,14 @@ def ivr_llm():
         )
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) Detectar solicitud de agente
+    # DETECTAR si el usuario pidió un humano
     texto = (speech or "").lower()
+
     if (digits == "0") or ("agente" in texto) or ("humano" in texto):
-        app.logger.info("Usuario pidió ser transferido a un agente.")
+        app.logger.info("⚡ Usuario pidió transferir a un agente humano.")
         return transferir_a_agente(vr)
 
-    # 3) Si no pidió agente → usamos GPT
+    # GPT entra aquí
     respuesta = llamar_gpt(speech or "")
     app.logger.info(f"Respuesta GPT: {respuesta}")
 
@@ -142,7 +143,7 @@ def ivr_llm():
         voice="Polly.Lupe",
     )
 
-    # 4) Segundo gather para seguir conversando
+    # Segundo gather para conversación continua
     gather2 = Gather(
         input="speech dtmf",
         num_digits=1,
@@ -152,8 +153,8 @@ def ivr_llm():
         timeout=5
     )
     gather2.say(
-        "¿Puedo ayudarte en algo más? Recuerda que si quieres un agente humano, "
-        "puedes decir 'agente' o presionar cero.",
+        "¿Puedo ayudarte en algo más? "
+        "Recuerda que si quieres un humano puedes decir 'agente' o marcar cero.",
         language="es-ES",
         voice="Polly.Lupe",
     )
