@@ -1,32 +1,39 @@
 from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse
+import os
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# Usuario SIP de Twilio al que quieres llamar
-AGENT_SIP = "sip:4000@nuxway.sip.twilio.com"
+TWILIO_CALLER_ID = os.getenv("TWILIO_CALLER_ID", "").strip()
+AGENT_NUMBER = os.getenv("AGENT_NUMBER", "").strip()
 
 
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
     app.logger.info(">>> Llamada entrante a /ivr-llm")
+    app.logger.info(f"TWILIO_CALLER_ID = {TWILIO_CALLER_ID!r}")
+    app.logger.info(f"AGENT_NUMBER    = {AGENT_NUMBER!r}")
 
     vr = VoiceResponse()
 
-    # Mensaje al llamante
     vr.say(
-        "Te voy a comunicar con un agente de prueba por SIP, usuario cuatro mil.",
+        "Te voy a comunicar con un agente de prueba.",
         language="es-ES",
-        voice="Polly.Lupe"
+        voice="Polly.Lupe",
     )
 
-    # Dial SIP: intentará llamar a sip:4000@nuxway.sip.twilio.com
-    app.logger.info(f"Marcando por SIP a {AGENT_SIP}")
-    dial = vr.dial()
-    dial.sip(AGENT_SIP)
+    if AGENT_NUMBER:
+        if TWILIO_CALLER_ID:
+            app.logger.info(f"Marcando a {AGENT_NUMBER} con callerId {TWILIO_CALLER_ID}")
+            vr.dial(AGENT_NUMBER, caller_id=TWILIO_CALLER_ID)
+        else:
+            app.logger.warning("⚠️ TWILIO_CALLER_ID NO CONFIGURADO — Twilio usará el callerId de la llamada SIP.")
+            vr.dial(AGENT_NUMBER)
+    else:
+        app.logger.error("❌ AGENT_NUMBER NO CONFIGURADO — <Dial> quedará vacío.")
 
     xml = str(vr)
     app.logger.info(f"TwiML devuelto:\n{xml}")
@@ -36,10 +43,9 @@ def ivr_llm():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "IVR LLM TEST SIP 4000 - Running!"
+    return "IVR LLM TEST - Running!"
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
