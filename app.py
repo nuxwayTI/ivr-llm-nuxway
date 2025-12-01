@@ -12,7 +12,7 @@ app = Flask(__name__)
 # TWILIO_CALLER_ID: un número Twilio comprado (ej: +12025550123)
 # AGENT_NUMBER: tu DID en la PBX que ya enruta a 4000 / 6200 (ej: +59144XXXXXX)
 TWILIO_CALLER_ID = os.getenv("TWILIO_CALLER_ID", "").strip()
-AGENT_NUMBER = os.getenv("AGENT_NUMBER", "").strip()
+AGENT_NUMBER = os.getenv("+59144556677", "").strip()
 
 
 @app.route("/ivr-llm", methods=["POST"])
