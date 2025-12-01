@@ -15,7 +15,7 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 # ======= CONFIGURACIÓN DE TRANSFERENCIA A AGENTE =======
 # NO USAMOS SIP POR AHORA. SOLO NÚMERO TELEFÓNICO REAL.
 AGENT_SIP = ""                         # desactivado
-AGENT_NUMBER = "4001"         # <-- PON AQUÍ TU CELULAR O DID
+AGENT_NUMBER = "+59170770144"         # <-- PON AQUÍ TU CELULAR O DID
 
 
 def llamar_gpt(user_text: str) -> str:
