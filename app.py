@@ -13,10 +13,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 # ======= CONFIGURACIÓN DE TRANSFERENCIA A AGENTE =======
-# Por ahora usamos SOLO número telefónico (más simple y seguro).
-# Cambia este número por tu celular o un DID que entre a tu PBX.
-AGENT_SIP = ""                         # desactivado por el momento
-AGENT_NUMBER = "+59144556677"         # <-- CAMBIA ESTO
+# NO USAMOS SIP POR AHORA. SOLO NÚMERO TELEFÓNICO REAL.
+AGENT_SIP = ""                         # desactivado
+AGENT_NUMBER = "4001"         # <-- PON AQUÍ TU CELULAR O DID
 
 
 def llamar_gpt(user_text: str) -> str:
@@ -73,15 +72,11 @@ def transferir_a_agente(vr: VoiceResponse) -> Response:
         voice="Polly.Lupe",
     )
 
-    # 1) Si algún día quieres volver a SIP directo, aquí iría dial.sip(AGENT_SIP)
     if AGENT_SIP and AGENT_SIP.startswith("sip:"):
         dial = vr.dial()
         dial.sip(AGENT_SIP)
-
-    # 2) Por ahora usamos número telefónico (recomendado para pruebas)
     elif AGENT_NUMBER:
         vr.dial(AGENT_NUMBER)
-
     else:
         vr.say(
             "No tengo un destino configurado para agentes en este momento.",
@@ -171,3 +166,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
