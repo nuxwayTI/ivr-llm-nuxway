@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 TWILIO_CALLER_ID = os.getenv("TWILIO_CALLER_ID", "").strip()
-AGENT_NUMBER = os.getenv("AGENT_NUMBER", "").strip()
+AGENT_NUMBER = os.getenv("4000", "").strip()
 
 
 @app.route("/ivr-llm", methods=["POST"])
