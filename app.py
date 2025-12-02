@@ -8,17 +8,31 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# API de OpenAI
+# =========================
+#  CONFIG OPENAI
+# =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# ======= CONFIGURACIÓN DE TRANSFERENCIA A AGENTE =======
-# NO USAMOS SIP POR AHORA. SOLO NÚMERO TELEFÓNICO REAL.
-AGENT_SIP = ""                         # desactivado
-AGENT_NUMBER = "4000"         # <-- PON AQUÍ TU CELULAR O DID
+# =========================
+#  CONFIG TRANSFERENCIA A AGENTE / COLA
+# =========================
+# IMPORTANTE:
+# Aquí usamos EXACTAMENTE lo que ya comprobaste que funciona
+# en tu TwiML Bin:
+#   <Sip>sip:6049@nuxway.sip.twilio.com</Sip>
+#
+# La PBX (Yeastar) se encarga de que lo que entra por este troncal
+# vaya a tu IVR o a la cola, según tu ruta entrante.
+#
+# Si luego quieres que vaya directo a la cola en lugar del IVR,
+# solo cambias la ruta entrante en Yeastar.
+AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
+AGENT_NUMBER = ""  # lo dejamos vacío para no usar PSTN aquí
 
 
 def llamar_gpt(user_text: str) -> str:
+    """Llama a la API de OpenAI y devuelve el texto de respuesta."""
     if not OPENAI_API_KEY:
         app.logger.error("OPENAI_API_KEY no está configurada en Render.")
         return "Hay un problema interno con la configuración de la inteligencia artificial."
@@ -65,18 +79,24 @@ def llamar_gpt(user_text: str) -> str:
 
 
 def transferir_a_agente(vr: VoiceResponse) -> Response:
-    """Genera TwiML para transferir a un agente humano."""
+    """
+    Genera TwiML para transferir a un agente humano / cola en la PBX.
+    IMPORTANTE: usamos SIP, igual que en tu TwiML Bin funcional.
+    """
     vr.say(
         "Te voy a comunicar con un agente humano. Por favor espera.",
         language="es-ES",
         voice="Polly.Lupe",
     )
 
+    # Hacemos un <Dial><Sip>sip:6049@nuxway.sip.twilio.com</Sip></Dial>
     if AGENT_SIP and AGENT_SIP.startswith("sip:"):
         dial = vr.dial()
         dial.sip(AGENT_SIP)
     elif AGENT_NUMBER:
-        vr.dial(AGENT_NUMBER)
+        # Solo se usaría si quisieras marcar a un número PSTN real
+        dial = vr.dial()
+        dial.number(AGENT_NUMBER)
     else:
         vr.say(
             "No tengo un destino configurado para agentes en este momento.",
@@ -126,7 +146,7 @@ def ivr_llm():
     # 2) Detectar si pidió humano
     texto = (speech or "").lower()
     if (digits == "0") or ("agente" in texto) or ("humano" in texto):
-        app.logger.info("⚡ Usuario pidió transferir a un agente humano.")
+        app.logger.info("⚡ Usuario pidió transferir a un agente humano / cola PBX.")
         return transferir_a_agente(vr)
 
     # 3) GPT para conversación normal
@@ -165,4 +185,5 @@ def home():
 
 
 if __name__ == "__main__":
+    # En Render normalmente no se usa debug=True, pero para local está bien.
     app.run(host="0.0.0.0", port=5000, debug=True)
