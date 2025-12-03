@@ -15,7 +15,7 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# Usamos una sesión global para reciclar conexiones
+# Usamos una sesión global para reciclar conexiones HTTP (keep-alive)
 session = requests.Session()
 
 # =========================
@@ -39,7 +39,7 @@ def llamar_gpt(user_text: str) -> str:
         "Content-Type": "application/json",
     }
 
-    # Prompt ultra corto y directo para reducir tokens
+    # Prompt corto y directo para reducir tokens y latencia
     data = {
         "model": "gpt-4.1-mini",
         "messages": [
@@ -47,13 +47,14 @@ def llamar_gpt(user_text: str) -> str:
                 "role": "system",
                 "content": (
                     "Eres un asistente telefónico de Nuxway Technology. "
-                    "Respondes en español, muy breve y directo, máximo dos frases."
+                    "Respondes siempre en español, muy breve y directo, "
+                    "máximo dos frases."
                 ),
             },
             {"role": "user", "content": user_text}
         ],
         # Limitar tokens baja el tiempo de generación
-        "max_tokens": 50,   # puedes probar incluso 30
+        "max_tokens": 50,   # puedes bajar a 30 si quieres aún más velocidad
         "temperature": 0.2,
     }
 
@@ -63,7 +64,7 @@ def llamar_gpt(user_text: str) -> str:
             OPENAI_URL,
             headers=headers,
             json=data,
-            timeout=8  # menor timeout para evitar cuelgues largos
+            timeout=8  # corta rápido si la IA se cuelga
         )
         t1 = time.monotonic()
         app.logger.info(f"[GPT] Status: {resp.status_code}, Latencia: {t1 - t0:.2f} s")
@@ -121,6 +122,10 @@ def transferir_a_agente(vr: VoiceResponse) -> Response:
 
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
+    """
+    Webhook que Twilio llama con SpeechResult / Digits.
+    Aquí medimos el tiempo total del handler y el de GPT.
+    """
     t_inicio = time.monotonic()
 
     speech = request.values.get("SpeechResult")
@@ -204,11 +209,28 @@ def ivr_llm():
     return Response(str(vr), mimetype="text/xml")
 
 
+@app.route("/test-gpt", methods=["GET"])
+def test_gpt():
+    """
+    Endpoint de prueba para medir solo Render + GPT, sin Twilio.
+    Lo llamas desde el navegador y miras los logs de Render.
+    """
+    t0 = time.monotonic()
+    respuesta = llamar_gpt("Responde en una frase: ¿qué es Nuxway Technology?")
+    t1 = time.monotonic()
+    return (
+        f"Respuesta GPT: {respuesta}\n"
+        f"Tiempo total en servidor (Render + GPT): {t1 - t0:.2f} s\n"
+    )
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "Nuxway IVR LLM - Running (low-latency)!"
 
 
 if __name__ == "__main__":
+    # En Render normalmente no se usa debug=True, pero para local está bien.
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
