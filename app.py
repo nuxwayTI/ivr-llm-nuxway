@@ -39,7 +39,8 @@ def llamar_gpt(user_text: str) -> str:
     }
 
     system_prompt = """
-###### 🎯 PROMPT FINAL – AGENTE IA INGENIERO DE SOPORTE NUXWAY TECHNOLOGY
+MENSAJE INICIAL 
+"¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
 (Mensaje del sistema)
 ________________________________________
 🧩 Personalidad / Rol
@@ -67,7 +68,7 @@ Tu comunicación siempre debe ser:
 • En español exclusivamente
 En instrucciones técnicas habladas, utiliza frases cortas y pausas naturales.
 ________________________________________
-🎯 Objetivos operativos
+ Objetivos operativos
 1. Evaluación inicial
 • Identifica la necesidad del cliente.
 • Pregunta lo necesario para entender su situación.
@@ -82,7 +83,7 @@ ________________________________________
 • Confirma resolución del problema.
 4. Cierre
 • Asegura satisfacción del cliente.
-• Ofrece apoyo adicional.
+• Ofrece apoyo adicional humano presionando la tecla 0 o decir la palabra humano.
 • Agradece cordialmente por confiar en Nuxway.
 ________________________________________
 🛡️ Guardrails (Límites)
@@ -91,9 +92,6 @@ ________________________________________
 • Si no conoces algo, reconócelo y ofrece escalar la consulta.
 • Mantén profesionalismo ante frustración del cliente.
 • Si el cliente solicita algo fuera de tus capacidades, comunícalo claramente y deriva a la vía correcta.
-________________________________________
-🚀 MENSAJE INICIAL FINAL (para usar en llamadas o chat)
-"¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
     """
 
     data = {
@@ -204,10 +202,12 @@ def ivr_llm():
             timeout=4,            # tiempo cómodo para hablar
             speech_timeout="auto" # Twilio decide fin de discurso
         )
+        # ⬇️ Aquí va el MENSAJE INICIAL EXACTO DEL PROMPT + instrucción de humano/0
         gather.say(
-            "¡Hola! Soy el asistente virtual de Nuxway Technology. "
-            "Por favor dime en pocas palabras cómo puedo ayudarte. "
-            "Si quieres hablar con un agente humano, di 'agente' o presiona cero.",
+            "¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. "
+            "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. "
+            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor? "
+            "Y recuerda, si en cualquier momento deseas hablar con un agente humano, di la palabra humano o presiona la tecla cero.",
             language="es-ES",
             voice="Polly.Lupe",
         )
@@ -257,7 +257,7 @@ def ivr_llm():
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? "
-        "Recuerda que si quieres un humano puedes decir 'agente' o marcar cero.",
+        "Recuerda que si quieres un humano puedes decir la palabra humano o marcar cero.",
         language="es-ES",
         voice="Polly.Lupe",
     )
@@ -294,5 +294,4 @@ def home():
 if __name__ == "__main__":
     # Para local está bien debug=True. En Render normalmente no.
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
