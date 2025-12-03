@@ -15,46 +15,42 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-# Usamos una sesión global para reciclar conexiones HTTP (keep-alive)
+# Sesión HTTP persistent (reduce 300–500 ms)
 session = requests.Session()
 
 # =========================
-#  CONFIG TRANSFERENCIA A AGENTE / COLA
+#  CONFIG TRANSFERENCIA
 # =========================
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
-AGENT_NUMBER = ""  # lo dejamos vacío para no usar PSTN
+AGENT_NUMBER = ""
 
 
+# =========================
+#  GPT LLAMADA OPTIMIZADA
+# =========================
 def llamar_gpt(user_text: str) -> str:
-    """
-    Llama a la API de OpenAI y devuelve el texto de respuesta.
-    Aquí medimos solo la parte del modelo.
-    """
     if not OPENAI_API_KEY:
-        app.logger.error("OPENAI_API_KEY no está configurada.")
-        return "Hay un problema con la configuración de la inteligencia artificial."
+        return "Error interno: API KEY no configurada."
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
 
-    # Prompt corto y directo para reducir tokens y latencia
+    # ⚡ Versión optimizada para velocidad
     data = {
-        "model": "gpt-4.1-mini",
+        "model": "gpt-4.1-nano",   # ⚡ ultra rápido
         "messages": [
             {
                 "role": "system",
                 "content": (
                     "Eres un asistente telefónico de Nuxway Technology. "
-                    "Respondes siempre en español, muy breve y directo, "
-                    "máximo dos frases."
+                    "Responde SIEMPRE en español, máximo 20 palabras, directo, claro."
                 ),
             },
             {"role": "user", "content": user_text}
         ],
-        # Limitar tokens baja el tiempo de generación
-        "max_tokens": 50,   # puedes bajar a 30 si quieres aún más velocidad
+        "max_tokens": 30,
         "temperature": 0.2,
     }
 
@@ -64,79 +60,56 @@ def llamar_gpt(user_text: str) -> str:
             OPENAI_URL,
             headers=headers,
             json=data,
-            timeout=8  # corta rápido si la IA se cuelga
+            timeout=5   # reduce tiempo de espera
         )
-        t1 = time.monotonic()
-        app.logger.info(f"[GPT] Status: {resp.status_code}, Latencia: {t1 - t0:.2f} s")
+        latency = time.monotonic() - t0
+
+        logging.info(f"[GPT] {resp.status_code} | Latencia: {latency:.2f} s")
 
         if resp.status_code != 200:
-            app.logger.info(f"[GPT] Error body: {resp.text[:400]}")
-            return "Tengo un problema con el servicio de inteligencia artificial. Inténtalo más tarde."
+            return "Hubo un problema interno, intenta nuevamente."
 
-        j = resp.json()
-        respuesta = j["choices"][0]["message"]["content"]
-        app.logger.info(f"[GPT] Longitud respuesta: {len(respuesta)} caracteres")
-        return respuesta
-
-    except requests.exceptions.Timeout:
-        t1 = time.monotonic()
-        app.logger.error(f"[GPT] TIMEOUT tras {t1 - t0:.2f} s")
-        return "La inteligencia artificial está tardando demasiado en responder. Por favor intenta de nuevo."
-
-    except requests.exceptions.RequestException as e:
-        t1 = time.monotonic()
-        app.logger.exception(f"[GPT] Error de red tras {t1 - t0:.2f} s: {e}")
-        return "Estoy teniendo problemas de conexión con la inteligencia artificial. Intenta nuevamente."
+        respuesta = resp.json()["choices"][0]["message"]["content"]
+        return respuesta.strip()
 
     except Exception as e:
-        t1 = time.monotonic()
-        app.logger.exception(f"[GPT] Error inesperado tras {t1 - t0:.2f} s: {e}")
-        return "Ocurrió un error interno al procesar la respuesta. Intenta nuevamente."
+        logging.error(f"[GPT] Error: {e}")
+        return "Error al procesar la inteligencia artificial."
 
 
+# =========================
+#  TRANSFERIR A AGENTE
+# =========================
 def transferir_a_agente(vr: VoiceResponse) -> Response:
-    """
-    Genera TwiML para transferir a un agente humano / cola en la PBX.
-    """
     vr.say(
-        "Te voy a comunicar con un agente humano. Por favor espera.",
+        "Te comunico con un agente humano. Por favor espera.",
         language="es-ES",
         voice="Polly.Lupe",
     )
 
-    if AGENT_SIP and AGENT_SIP.startswith("sip:"):
-        dial = vr.dial()
+    dial = vr.dial()
+    if AGENT_SIP:
         dial.sip(AGENT_SIP)
-    elif AGENT_NUMBER:
-        dial = vr.dial()
-        dial.number(AGENT_NUMBER)
-    else:
-        vr.say(
-            "No tengo un destino configurado para agentes en este momento.",
-            language="es-ES",
-            voice="Polly.Lupe"
-        )
 
     return Response(str(vr), mimetype="text/xml")
 
 
+# =========================
+#  IVR PRINCIPAL
+# =========================
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
-    """
-    Webhook que Twilio llama con SpeechResult / Digits.
-    Aquí medimos el tiempo total del handler y el de GPT.
-    """
     t_inicio = time.monotonic()
 
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
 
-    app.logger.info(f"[IVR] SpeechResult: {speech}")
-    app.logger.info(f"[IVR] Digits: {digits}")
+    logging.info(f"[IVR] Speech: {speech}")
+    logging.info(f"[IVR] Digits: {digits}")
 
     vr = VoiceResponse()
 
-    # 1) Primera vuelta: pedir mensaje o DTMF
+    # Primera interacción: pedir mensaje
     if not speech and not digits:
         gather = Gather(
             input="speech dtmf",
@@ -144,93 +117,78 @@ def ivr_llm():
             language="es-ES",
             action="/ivr-llm",
             method="POST",
-            timeout=3  # mantén esto bajo para no sumar espera
+            timeout=2    # ⚡ más rápido
         )
         gather.say(
-            "Hola, soy un asistente de Nuxway Technology con inteligencia artificial. "
-            "Dime en pocas palabras cómo puedo ayudarte. "
-            "Si quieres hablar con un agente humano, di 'agente' o presiona cero.",
+            "Hola, soy el asistente de Nuxway. ¿Cómo puedo ayudarte? "
+            "Di agente o marca cero para humano.",
             language="es-ES",
             voice="Polly.Lupe",
         )
         vr.append(gather)
 
         vr.say(
-            "No escuché ninguna respuesta. Hasta luego.",
+            "No escuché tu respuesta. Gracias por llamar.",
             language="es-ES",
-            voice="Polly.Lupe",
+            voice="Polly.Lupe"
         )
-
-        t_fin = time.monotonic()
-        app.logger.info(f"[IVR] Sin input, handler tomó: {t_fin - t_inicio:.2f} s")
         return Response(str(vr), mimetype="text/xml")
 
-    # 2) Detectar si pidió humano
+    # Detectar agente humano
     texto = (speech or "").lower()
-    if (digits == "0") or ("agente" in texto) or ("humano" in texto):
-        app.logger.info("[IVR] Usuario pidió agente humano.")
-        t_fin = time.monotonic()
-        app.logger.info(f"[IVR] Tiempo hasta transferir a agente: {t_fin - t_inicio:.2f} s")
+    if digits == "0" or "agente" in texto or "humano" in texto:
         return transferir_a_agente(vr)
 
-    # 3) GPT para conversación normal
+    # Llamar a GPT
     t_gpt_ini = time.monotonic()
     respuesta = llamar_gpt(speech or "")
     t_gpt_fin = time.monotonic()
-    app.logger.info(f"[IVR] llamar_gpt() tardó: {t_gpt_fin - t_gpt_ini:.2f} s")
-    app.logger.info(f"[IVR] Respuesta GPT: {respuesta}")
 
-    vr.say(
-        respuesta,
-        language="es-ES",
-        voice="Polly.Lupe",
-    )
+    logging.info(f"[GPT] tiempo: {t_gpt_fin - t_gpt_ini:.2f}s | resp: {respuesta}")
 
-    # 4) Segundo gather para continuar
+    vr.say(respuesta, language="es-ES", voice="Polly.Lupe")
+
+    # Segundo turno
     gather2 = Gather(
         input="speech dtmf",
         num_digits=1,
         language="es-ES",
         action="/ivr-llm",
         method="POST",
-        timeout=3
+        timeout=2
     )
     gather2.say(
-        "¿Puedo ayudarte en algo más? "
-        "Recuerda que si quieres un humano puedes decir 'agente' o marcar cero.",
+        "¿Puedo ayudarte con algo más?",
         language="es-ES",
         voice="Polly.Lupe",
     )
     vr.append(gather2)
 
-    t_fin = time.monotonic()
-    app.logger.info(f"[IVR] Handler /ivr-llm total: {t_fin - t_inicio:.2f} s")
+    logging.info(f"[IVR] Handler total: {time.monotonic() - t_inicio:.2f} s")
 
     return Response(str(vr), mimetype="text/xml")
 
 
+# =========================
+#  TEST DE LATENCIA
+# =========================
 @app.route("/test-gpt", methods=["GET"])
 def test_gpt():
-    """
-    Endpoint de prueba para medir solo Render + GPT, sin Twilio.
-    Lo llamas desde el navegador y miras los logs de Render.
-    """
     t0 = time.monotonic()
-    respuesta = llamar_gpt("Responde en una frase: ¿qué es Nuxway Technology?")
+    respuesta = llamar_gpt("¿Qué es Nuxway Technology?")
     t1 = time.monotonic()
+
     return (
-        f"Respuesta GPT: {respuesta}\n"
-        f"Tiempo total en servidor (Render + GPT): {t1 - t0:.2f} s\n"
+        f"GPT: {respuesta}\n"
+        f"Tiempo total: {t1 - t0:.2f} s\n"
     )
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Nuxway IVR LLM - Running (low-latency)!"
+    return "Nuxway IVR LLM optimizado ⚡"
 
 
 if __name__ == "__main__":
-    # En Render normalmente no se usa debug=True, pero para local está bien.
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
