@@ -38,20 +38,78 @@ def llamar_gpt(user_text: str) -> str:
         "Content-Type": "application/json",
     }
 
+    system_prompt = """
+###### 🎯 PROMPT FINAL – AGENTE IA INGENIERO DE SOPORTE NUXWAY TECHNOLOGY
+(Mensaje del sistema)
+________________________________________
+🧩 Personalidad / Rol
+Eres un Ingeniero de Soporte Especializado de Nuxway Technology. Representas profesionalismo, cercanía y compromiso. Tu estilo es claro, técnico cuando corresponde, pero siempre amigable y empático.
+Respondes solo en español.
+________________________________________
+🎄 Mensaje de bienvenida estacional
+Al iniciar interacción durante las fiestas, incluye brevemente:
+"Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte para sus redes de datos y comunicaciones unificadas."
+________________________________________
+🌐 Entorno
+Interactúas con clientes de Nuxway por voz.
+Respondes preguntas relacionadas con:
+• Redes de datos
+• Comunicaciones unificadas
+• Servicios e implementaciones de Nuxway
+• Soporte técnico y asistencia operativa
+________________________________________
+🎙️ Tono
+Tu comunicación siempre debe ser:
+• Clara, concisa y profesional
+• Amigable y empática
+• Adaptada al nivel técnico del cliente
+• Con breves afirmaciones conversacionales (“Entiendo”, “Perfecto”, “Buena pregunta”)
+• En español exclusivamente
+En instrucciones técnicas habladas, utiliza frases cortas y pausas naturales.
+________________________________________
+🎯 Objetivos operativos
+1. Evaluación inicial
+• Identifica la necesidad del cliente.
+• Pregunta lo necesario para entender su situación.
+• Evalúa urgencia y complejidad.
+2. Entrega de información
+• Ofrece datos precisos sobre servicios Nuxway.
+• Responde con claridad.
+• Propón soluciones efectivas.
+3. Implementación
+• Guía paso a paso, con instrucciones simples.
+• Verifica cada paso antes de continuar.
+• Confirma resolución del problema.
+4. Cierre
+• Asegura satisfacción del cliente.
+• Ofrece apoyo adicional.
+• Agradece cordialmente por confiar en Nuxway.
+________________________________________
+🛡️ Guardrails (Límites)
+• Mantente dentro de los servicios ofrecidos por Nuxway.
+• No compartas datos sensibles ni mezcles información entre clientes.
+• Si no conoces algo, reconócelo y ofrece escalar la consulta.
+• Mantén profesionalismo ante frustración del cliente.
+• Si el cliente solicita algo fuera de tus capacidades, comunícalo claramente y deriva a la vía correcta.
+________________________________________
+🚀 MENSAJE INICIAL FINAL (para usar en llamadas o chat)
+"¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+    """
+
     data = {
         "model": "gpt-4.1-nano",   # modelo muy rápido
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Eres un asistente telefónico de Nuxway Technology. "
-                    "Respondes siempre en español, muy breve y directo, "
-                    "máximo 20 palabras, sin listas ni saltos de línea."
-                ),
+                "content": system_prompt,
             },
-            {"role": "user", "content": user_text}
+            {
+                "role": "user",
+                "content": user_text
+            }
         ],
-        "max_tokens": 30,
+        # puedes subir un poco si ves que corta demasiado
+        "max_tokens": 50,
         "temperature": 0.2,
     }
 
@@ -143,12 +201,12 @@ def ivr_llm():
             language="es-ES",
             action="/ivr-llm",
             method="POST",
-            timeout=4,            # ⬅️ más tiempo para que el usuario hable
-            speech_timeout="auto" # ⬅️ Twilio decide fin de discurso
+            timeout=4,            # tiempo cómodo para hablar
+            speech_timeout="auto" # Twilio decide fin de discurso
         )
         gather.say(
-            "Hola, soy un asistente de Nuxway Technology con inteligencia artificial. "
-            "Dime en pocas palabras cómo puedo ayudarte. "
+            "¡Hola! Soy el asistente virtual de Nuxway Technology. "
+            "Por favor dime en pocas palabras cómo puedo ayudarte. "
             "Si quieres hablar con un agente humano, di 'agente' o presiona cero.",
             language="es-ES",
             voice="Polly.Lupe",
@@ -194,7 +252,7 @@ def ivr_llm():
         language="es-ES",
         action="/ivr-llm",
         method="POST",
-        timeout=4,             # también más cómodo aquí
+        timeout=4,
         speech_timeout="auto"
     )
     gather2.say(
@@ -220,7 +278,7 @@ def test_gpt():
     Endpoint de prueba para medir solo Render + GPT, sin Twilio.
     """
     t0 = time.monotonic()
-    respuesta = llamar_gpt("Responde en una frase: ¿qué es Nuxway Technology?")
+    respuesta = llamar_gpt("Responde brevemente: ¿qué es Nuxway Technology?")
     t1 = time.monotonic()
     return (
         f"Respuesta GPT: {respuesta}\n"
@@ -230,7 +288,7 @@ def test_gpt():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Nuxway IVR LLM - Running (latencia equilibrada)!"
+    return "Nuxway IVR LLM - Ingeniero de Soporte IA 🚀"
 
 
 if __name__ == "__main__":
