@@ -38,20 +38,21 @@ def llamar_gpt(user_text: str) -> str:
         "Content-Type": "application/json",
     }
 
+    # Ajustado: primero pide nombre/empresa, luego saludo festivo
     system_prompt = """
 MENSAJE INICIAL 
-"¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+"¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor? Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway."
 (Mensaje del sistema)
 ________________________________________
-🧩 Personalidad / Rol
+ Personalidad / Rol
 Eres un Ingeniero de Soporte Especializado de Nuxway Technology. Representas profesionalismo, cercanía y compromiso. Tu estilo es claro, técnico cuando corresponde, pero siempre amigable y empático.
 Respondes solo en español.
 ________________________________________
-🎄 Mensaje de bienvenida estacional
+ Mensaje de bienvenida estacional
 Al iniciar interacción durante las fiestas, incluye brevemente:
 "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte para sus redes de datos y comunicaciones unificadas."
 ________________________________________
-🌐 Entorno
+ Entorno
 Interactúas con clientes de Nuxway por voz.
 Respondes preguntas relacionadas con:
 • Redes de datos
@@ -59,7 +60,7 @@ Respondes preguntas relacionadas con:
 • Servicios e implementaciones de Nuxway
 • Soporte técnico y asistencia operativa
 ________________________________________
-🎙️ Tono
+ Tono
 Tu comunicación siempre debe ser:
 • Clara, concisa y profesional
 • Amigable y empática
@@ -85,8 +86,8 @@ ________________________________________
 • Asegura satisfacción del cliente.
 • Ofrece apoyo adicional humano presionando la tecla 0 o decir la palabra humano.
 • Agradece cordialmente por confiar en Nuxway.
-________________________________________
-🛡️ Guardrails (Límites)
+
+ Guardrails (Límites)
 • Mantente dentro de los servicios ofrecidos por Nuxway.
 • No compartas datos sensibles ni mezcles información entre clientes.
 • Si no conoces algo, reconócelo y ofrece escalar la consulta.
@@ -106,7 +107,6 @@ ________________________________________
                 "content": user_text
             }
         ],
-        # puedes subir un poco si ves que corta demasiado
         "max_tokens": 50,
         "temperature": 0.2,
     }
@@ -180,40 +180,53 @@ def transferir_a_agente(vr: VoiceResponse) -> Response:
 def ivr_llm():
     """
     Webhook que Twilio llama con SpeechResult / Digits.
+    Usa un parámetro 'phase' para saber si es primera vez o seguimiento.
     """
     t_inicio = time.monotonic()
 
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
+    phase = request.args.get("phase", "initial")  # "initial" o "followup"
 
-    logging.info(f"[IVR] SpeechResult: {speech}")
-    logging.info(f"[IVR] Digits: {digits}")
+    logging.info(f"[IVR] Phase: {phase} | SpeechResult: {speech} | Digits: {digits}")
 
     vr = VoiceResponse()
 
-    # 1) Primera vuelta: pedir mensaje o DTMF
+    # 1) Sin input (tanto en initial como followup)
     if not speech and not digits:
+        # Si es followup y no respondió, colgamos elegante
+        if phase == "followup":
+            vr.say(
+                "No recibí ninguna respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe",
+            )
+            vr.hangup()
+            t_fin = time.monotonic()
+            logging.info(f"[IVR] Sin respuesta en followup, llamada terminada. Handler tomó: {t_fin - t_inicio:.2f} s")
+            return Response(str(vr), mimetype="text/xml")
+
+        # Primera vez: mensaje inicial DEL PROMPT
         gather = Gather(
             input="speech dtmf",
             num_digits=1,
             language="es-ES",
-            action="/ivr-llm",
+            action="/ivr-llm",   # sigue yendo a /ivr-llm (phase=initial)
             method="POST",
-            timeout=4,            # tiempo cómodo para hablar
-            speech_timeout="auto" # Twilio decide fin de discurso
+            timeout=4,
+            speech_timeout="auto"
         )
-        # ⬇️ Aquí va el MENSAJE INICIAL EXACTO DEL PROMPT + instrucción de humano/0
         gather.say(
             "¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. "
-            "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. "
             "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor? "
-            "Y recuerda, si en cualquier momento deseas hablar con un agente humano, di la palabra humano o presiona la tecla cero.",
+            "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. "
+            "Y recuerda, si en cualquier momento deseas hablar con un agente humano, "
+            "di la palabra humano o presiona la tecla cero.",
             language="es-ES",
             voice="Polly.Lupe",
         )
         vr.append(gather)
 
-        # Este mensaje solo se ejecuta si no hubo ningún input
         vr.say(
             "No escuché ninguna respuesta. Hasta luego.",
             language="es-ES",
@@ -221,7 +234,7 @@ def ivr_llm():
         )
 
         t_fin = time.monotonic()
-        logging.info(f"[IVR] Sin input, handler tomó: {t_fin - t_inicio:.2f} s")
+        logging.info(f"[IVR] Sin input en fase initial, handler tomó: {t_fin - t_inicio:.2f} s")
         return Response(str(vr), mimetype="text/xml")
 
     # 2) Detectar si pidió humano
@@ -246,18 +259,20 @@ def ivr_llm():
     )
 
     # 4) Segundo gather para continuar la conversación
+    #    Ahora marcamos phase=followup para que si NO responde, cuelgue.
     gather2 = Gather(
         input="speech dtmf",
         num_digits=1,
         language="es-ES",
-        action="/ivr-llm",
+        action="/ivr-llm?phase=followup",
         method="POST",
         timeout=4,
         speech_timeout="auto"
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? "
-        "Recuerda que si quieres un humano puedes decir la palabra humano o marcar cero.",
+        "Recuerda que si quieres un humano puedes decir la palabra humano o marcar cero. "
+        "Si no respondes, finalizaré la llamada.",
         language="es-ES",
         voice="Polly.Lupe",
     )
