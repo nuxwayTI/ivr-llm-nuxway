@@ -218,7 +218,7 @@ def ivr_llm():
         )
         gather.say(
             "¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. "
-            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor? "
+            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor? ",
             language="es-ES",
             voice="Polly.Lupe",
         )
