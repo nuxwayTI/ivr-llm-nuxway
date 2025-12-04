@@ -14,40 +14,38 @@ app = Flask(__name__)
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-session = requests.Session()  # mantener conexiones abiertas
+session = requests.Session()  # mantener conexiones HTTP
 
 
 # =========================
 # PROMPT DEL AGENTE IA
 # =========================
 SYSTEM_PROMPT = """
-Eres el Agente con Inteligencia Artificial de Nuxway Technology.
+Eres el Agente de Inteligencia Artificial de Nuxway Technology.
 Respondes SOLO en español.
 
-Tu estilo:
-- Profesional, claro y amable.
-- Frases cortas y pausadas, adecuadas para una llamada telefónica.
-- Siempre empático y cordial.
+En tu PRIMER mensaje al cliente debes seguir SIEMPRE esta estructura:
 
-Al inicio de la PRIMERA interacción con el cliente (cuando aún no conoces su nombre):
-1) Preséntate brevemente como el Agente de Inteligencia Artificial de Nuxway Technology.
-2) Felicita por las fiestas de Navidad y Año Nuevo.
-3) Pide el nombre de la persona y el de su empresa.
-4) Incluye EXACTAMENTE una vez este mensaje (en algún momento del saludo inicial o inmediatamente después):
+1) Preséntate claramente, por ejemplo:
+   "Hola, soy el Agente de Inteligencia Artificial de Nuxway Technology."
+2) Felicita brevemente por las fiestas de Navidad y Año Nuevo.
+3) Explica en una frase que estás para ayudar con soporte de redes, comunicaciones unificadas y servicios de Nuxway.
+4) Luego pide de forma amable el nombre de la persona y el de su empresa.
+5) Incluye EXACTAMENTE una vez este mensaje (puede ser en ese mismo saludo o justo después):
+   "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte para sus redes de datos y comunicaciones unificadas."
 
-"Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte para sus redes de datos y comunicaciones unificadas."
-
-Contexto del rol:
-- Ayudas en temas de redes de datos, comunicaciones unificadas, servicios e implementaciones de Nuxway y soporte técnico.
-- Haces preguntas para entender la situación del cliente.
-- Acompañas paso a paso.
-- Siempre ofreces derivar a un humano si el cliente lo pide o si el caso lo requiere.
+En mensajes posteriores:
+- Responde de forma clara, breve y profesional.
+- Adapta tu nivel técnico al del cliente.
+- Usa un tono empático, cordial y tranquilo.
+- Puedes hacer preguntas para entender mejor el problema.
+- Siempre que el cliente lo pida o lo veas necesario, ofrece derivar a un agente humano.
 
 Guardrails:
 - No inventes información técnica.
 - Si no sabes algo, dilo honestamente y sugiere escalar a un humano.
 - No compartas datos sensibles.
-- Mantén siempre un tono respetuoso y profesional, incluso si el cliente está frustrado.
+- Mantén siempre un tono respetuoso y profesional.
 """
 
 
@@ -66,12 +64,11 @@ def llamar_gpt(prompt_usuario: str) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt_usuario}
         ],
-        "max_tokens": 60,
-        "temperature": 0.2
+        "max_tokens": 80,
+        "temperature": 0.2,
     }
 
     t0 = time.monotonic()
-
     try:
         r = session.post(OPENAI_URL, json=data, headers=headers, timeout=6)
         lat = time.monotonic() - t0
@@ -113,19 +110,47 @@ def ivr_llm():
     digits = request.values.get("Digits")
 
     phase = request.args.get("phase", "initial")  # "initial" / "followup"
-    attempt = int(request.args.get("attempt", "1"))
+    attempt_param = request.args.get("attempt")   # None en la PRIMERA vez
+    attempt = int(attempt_param) if attempt_param is not None else None
 
     logging.info(f"[IVR] phase={phase} attempt={attempt} speech={speech} digits={digits}")
 
     vr = VoiceResponse()
 
     # =====================================================
-    # 1. DETECCIÓN DE SILENCIO (NO HABLÓ NADA)
+    # 0. PRIMERA ENTRADA DESDE TWILIO (SIN attempt)
+    # =====================================================
+    if phase == "initial" and attempt is None:
+        # Primer contacto: siempre mostramos el mensaje inicial bonito
+        # y empezamos contador attempt=1 en la siguiente vuelta.
+        gather = Gather(
+            input="speech",
+            language="es-ES",
+            action="/ivr-llm?phase=initial&attempt=1",
+            method="POST",
+            timeout=7,
+            speech_timeout="3"
+        )
+        gather.say(
+            "¡Hola! Soy el Agente de Inteligencia Artificial de Nuxway Technology. "
+            "Para comenzar, por favor dime tu nombre y el de tu empresa después de este mensaje.",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+        vr.append(gather)
+        return Response(str(vr), mimetype="text/xml")
+
+    # A partir de aquí, attempt SIEMPRE tiene un entero (1, 2, 3…)
+    if attempt is None:
+        attempt = 1  # fallback por si acaso
+
+    # =====================================================
+    # 1. DETECTAR SILENCIO (NO HABLÓ NADA)
     # =====================================================
     no_hablo = (speech is None) or (speech.strip() == "")
 
     if no_hablo:
-        # FOLLOWUP → cuelga directo si no responde
+        # FOLLOWUP: si no habla en followup, colgamos directamente
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -135,7 +160,7 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # INITIAL → 2 repeticiones, en la 3 cuelga
+        # INITIAL: queremos máximo 2 repeticiones, en la tercera colgamos
         if attempt >= 3:
             vr.say(
                 "No escuché ninguna respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -147,30 +172,26 @@ def ivr_llm():
 
         next_attempt = attempt + 1
 
-        # Mensaje inicial del IVR (ahora neutro, el branding lo hace GPT)
-        base_msg = (
-            "Por favor, indica tu nombre y el de tu empresa después de este mensaje."
-        )
-
+        # Mensaje inicial (se repite si no habló)
         if attempt == 1:
-            mensaje_inicial = base_msg
-        else:
-            # attempt == 2 → lo repite explícitamente
+            mensaje_inicial = (
+                "Por favor, dime tu nombre y el de tu empresa después de este mensaje."
+            )
+        else:  # attempt == 2
             mensaje_inicial = (
                 "Parece que no logré escucharte. Te repito nuevamente la instrucción. "
-                + base_msg
+                "Por favor, dime tu nombre y el de tu empresa después de este mensaje."
             )
 
         gather = Gather(
-            input="speech",  # solo speech para que Twilio maneje bien silencios
+            input="speech",
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=7,          # tiempo total para que el usuario hable
-            speech_timeout="3"  # 3 segundos de silencio antes de cortar el speech
+            timeout=7,
+            speech_timeout="3"
         )
         gather.say(mensaje_inicial, language="es-ES", voice="Polly.Lupe")
-
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
@@ -183,10 +204,9 @@ def ivr_llm():
         return transferir_a_agente(vr)
 
     # =====================================================
-    # 3. GPT RESPONDE (CON SALUDO Y TODO SEGÚN PROMPT)
+    # 3. GPT RESPONDE (PRESENTACIÓN, FIESTAS, ETC.)
     # =====================================================
     respuesta_gpt = llamar_gpt(speech or "")
-
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
     # =====================================================
@@ -195,7 +215,7 @@ def ivr_llm():
     gather2 = Gather(
         input="speech",
         language="es-ES",
-        action="/ivr-llm?phase=followup",
+        action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=7,
         speech_timeout="3"
