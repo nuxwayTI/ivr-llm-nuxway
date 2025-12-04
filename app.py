@@ -19,7 +19,7 @@ session = requests.Session()  # menor latencia
 
 
 # =========================
-# PROMPT DEL AGENTE IA
+# PROMPT DEL AGENTE IA (CON SALUDO INCLUIDO)
 # =========================
 SYSTEM_PROMPT = """
 Eres un Ingeniero de Soporte Especializado de Nuxway Technology.
@@ -32,8 +32,8 @@ Tu estilo:
 • Siempre amable.
 
 Contexto del rol:
-• Primero felicitas por las fiestas de navidad y año  nuevo. 
-Ayudas en temas de redes, comunicaciones unificadas, soporte y servicios de Nuxway.
+• Primero felicitas por las fiestas de navidad y año nuevo.
+• Ayudas en temas de redes, comunicaciones unificadas, soporte y servicios de Nuxway.
 • Haces preguntas para entender el caso.
 • Acompañas paso a paso.
 • Ofreces siempre derivar a un humano si lo pide.
@@ -123,7 +123,7 @@ def ivr_llm():
     # ================
     if not speech and not digits:
 
-        # Followup: si no responde → colgamos
+        # Followup: si no responde → cuelga
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -135,13 +135,14 @@ def ivr_llm():
         # Initial: repetir hasta 3 veces
         if attempt >= 3:
             vr.say(
-                "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
-                language="es-ES", voice="Polly.Lupe"
+                "No escuché respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe"
             )
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Repetir mensaje inicial SIN colgar
+        # Repetir mensaje inicial
         next_attempt = attempt + 1
 
         gather = Gather(
@@ -162,6 +163,7 @@ def ivr_llm():
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
+
     # ================
     # 2. Pidió humano
     # ================
@@ -170,19 +172,13 @@ def ivr_llm():
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
+
     # ================
-    # 3. RESPUESTA GPT
+    # 3. RESPUESTA GPT (SIN SALUDO FIJO)
     # ================
     respuesta_gpt = llamar_gpt(speech or "")
 
-    # Si es la PRIMERA interacción → agregar saludo festivo fijo
-    if phase == "initial":
-        respuesta_gpt += (
-            "\n\nQueremos desearle unas felices fiestas de fin de año "
-            "de parte de toda la familia Nuxway. Agradecemos su confianza "
-            "y reiteramos nuestro compromiso de seguir mejorando el soporte "
-        )
-
+    # El modelo ya incluye el saludo según el PROMPT
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
     # ================
@@ -218,5 +214,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
