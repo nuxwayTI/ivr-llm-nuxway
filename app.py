@@ -14,33 +14,45 @@ app = Flask(__name__)
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-session = requests.Session()
+session = requests.Session()  # mantener conexiones abiertas
+
 
 # =========================
-# PROMPT IA
+# PROMPT DEL AGENTE IA
 # =========================
 SYSTEM_PROMPT = """
-Eres un Ingeniero de Soporte Especializado de Nuxway Technology.
+Eres el Agente con Inteligencia Artificial de Nuxway Technology.
 Respondes SOLO en español.
 
 Tu estilo:
-• Profesional, claro, amable y empático.
-• Frases cortas, pausadas para voz.
-• Cordial y directo.
+- Profesional, claro y amable.
+- Frases cortas y pausadas, adecuadas para una llamada telefónica.
+- Siempre empático y cordial.
 
-Reglas:
-• Primero felicitas por las fiestas.
-• Preguntas nombre y empresa.
-• Ayudas en redes, comunicaciones unificadas y soporte.
-• Acompañas paso a paso.
-• Escalas a humano si lo piden.
+Al inicio de la PRIMERA interacción con el cliente (cuando aún no conoces su nombre):
+1) Preséntate brevemente como el Agente de Inteligencia Artificial de Nuxway Technology.
+2) Felicita por las fiestas de Navidad y Año Nuevo.
+3) Pide el nombre de la persona y el de su empresa.
+4) Incluye EXACTAMENTE una vez este mensaje (en algún momento del saludo inicial o inmediatamente después):
 
-Mensaje obligatorio (una vez):
 "Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte para sus redes de datos y comunicaciones unificadas."
+
+Contexto del rol:
+- Ayudas en temas de redes de datos, comunicaciones unificadas, servicios e implementaciones de Nuxway y soporte técnico.
+- Haces preguntas para entender la situación del cliente.
+- Acompañas paso a paso.
+- Siempre ofreces derivar a un humano si el cliente lo pide o si el caso lo requiere.
+
+Guardrails:
+- No inventes información técnica.
+- Si no sabes algo, dilo honestamente y sugiere escalar a un humano.
+- No compartas datos sensibles.
+- Mantén siempre un tono respetuoso y profesional, incluso si el cliente está frustrado.
 """
 
+
 # =========================
-#  GPT CALL
+#  API CALL GPT
 # =========================
 def llamar_gpt(prompt_usuario: str) -> str:
     headers = {
@@ -52,30 +64,36 @@ def llamar_gpt(prompt_usuario: str) -> str:
         "model": "gpt-4.1-nano",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt_usuario},
+            {"role": "user", "content": prompt_usuario}
         ],
         "max_tokens": 60,
-        "temperature": 0.2,
+        "temperature": 0.2
     }
+
+    t0 = time.monotonic()
 
     try:
         r = session.post(OPENAI_URL, json=data, headers=headers, timeout=6)
+        lat = time.monotonic() - t0
+        logging.info(f"[GPT] {r.status_code} | {lat:.2f} s")
+
         if r.status_code != 200:
-            logging.error(r.text)
+            logging.error(f"[GPT] Error body: {r.text[:300]}")
             return "Tengo problemas con la inteligencia artificial en este momento."
+
         return r.json()["choices"][0]["message"]["content"]
 
     except Exception:
-        logging.exception("GPT ERROR")
+        logging.exception("[GPT] Error")
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
 
 # =========================
-#  TRANSFERENCIA
+#  TRANSFERENCIA A HUMANO
 # =========================
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
-def transferir_a_agente(vr):
+def transferir_a_agente(vr: VoiceResponse) -> Response:
     vr.say(
         "Te voy a comunicar con un agente humano. Por favor espera.",
         language="es-ES",
@@ -94,34 +112,20 @@ def ivr_llm():
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
 
-    # Eventos especiales de Twilio
-    event_twilio = request.values.get("Event", "")
-    timeout_reason = request.values.get("TimeoutReason", "")
-
-    phase = request.args.get("phase", "initial")  # initial / followup
+    phase = request.args.get("phase", "initial")  # "initial" / "followup"
     attempt = int(request.args.get("attempt", "1"))
 
-    logging.info(f"[IVR] phase={phase} attempt={attempt} speech={speech} event={event_twilio} timeout={timeout_reason}")
+    logging.info(f"[IVR] phase={phase} attempt={attempt} speech={speech} digits={digits}")
 
     vr = VoiceResponse()
 
     # =====================================================
-    # DETECCIÓN DE SILENCIO REAL (MEGA FIX)
+    # 1. DETECCIÓN DE SILENCIO (NO HABLÓ NADA)
     # =====================================================
-    no_hablo = (
-        speech is None or
-        speech.strip() == "" or
-        ("timeout" in event_twilio.lower()) or
-        ("timeout" in timeout_reason.lower()) or
-        ("noinput" in event_twilio.lower())
-    )
+    no_hablo = (speech is None) or (speech.strip() == "")
 
-    # =====================================================
-    # 1. NO HABLÓ
-    # =====================================================
     if no_hablo:
-
-        # FOLLOWUP → cuelga
+        # FOLLOWUP → cuelga directo si no responde
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -131,7 +135,7 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # INITIAL → repetir 2 veces
+        # INITIAL → 2 repeticiones, en la 3 cuelga
         if attempt >= 3:
             vr.say(
                 "No escuché ninguna respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -143,25 +147,27 @@ def ivr_llm():
 
         next_attempt = attempt + 1
 
-        mensaje_inicial = (
-            "¡Hola! Soy el Agente con Inteligencia Artificial de Nuxway Technology. "
-            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+        # Mensaje inicial del IVR (ahora neutro, el branding lo hace GPT)
+        base_msg = (
+            "Por favor, indica tu nombre y el de tu empresa después de este mensaje."
         )
 
-        # En el segundo intento, repetir explícito
-        if attempt == 2:
+        if attempt == 1:
+            mensaje_inicial = base_msg
+        else:
+            # attempt == 2 → lo repite explícitamente
             mensaje_inicial = (
-                "Parece que no logramos escucharte. Te repito nuevamente. "
-                + mensaje_inicial
+                "Parece que no logré escucharte. Te repito nuevamente la instrucción. "
+                + base_msg
             )
 
         gather = Gather(
-            input="speech dtmf",
+            input="speech",  # solo speech para que Twilio maneje bien silencios
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=7,
-            speech_timeout="auto"
+            timeout=7,          # tiempo total para que el usuario hable
+            speech_timeout="3"  # 3 segundos de silencio antes de cortar el speech
         )
         gather.say(mensaje_inicial, language="es-ES", voice="Polly.Lupe")
 
@@ -169,7 +175,7 @@ def ivr_llm():
         return Response(str(vr), mimetype="text/xml")
 
     # =====================================================
-    # 2. PIDIO HUMANO
+    # 2. PIDIÓ HUMANO (DTMF O VOZ)
     # =====================================================
     text_lower = (speech or "").lower()
 
@@ -177,25 +183,26 @@ def ivr_llm():
         return transferir_a_agente(vr)
 
     # =====================================================
-    # 3. GPT
+    # 3. GPT RESPONDE (CON SALUDO Y TODO SEGÚN PROMPT)
     # =====================================================
     respuesta_gpt = llamar_gpt(speech or "")
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
     # =====================================================
-    # 4. FOLLOWUP
+    # 4. FOLLOWUP: CONTINUAR O COLGAR SI NO HABLA
     # =====================================================
     gather2 = Gather(
-        input="speech dtmf",
+        input="speech",
         language="es-ES",
         action="/ivr-llm?phase=followup",
         method="POST",
         timeout=7,
-        speech_timeout="auto"
+        speech_timeout="3"
     )
     gather2.say(
-        "¿Puedo ayudarte en algo más? Si necesitas un humano, di 'humano' o marca cero. "
+        "¿Puedo ayudarte en algo más? "
+        "Si necesitas un humano, di 'humano' o marca cero. "
         "Si no me respondes, finalizaré la llamada.",
         language="es-ES",
         voice="Polly.Lupe"
