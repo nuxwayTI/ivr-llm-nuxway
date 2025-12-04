@@ -179,8 +179,7 @@ def ivr_llm():
         respuesta_gpt += (
             "\n\nQueremos desearle unas felices fiestas de fin de año "
             "de parte de toda la familia Nuxway. Agradecemos su confianza "
-            "y reafirmamos nuestro compromiso de seguir mejorando el soporte "
-            "para sus redes de datos y comunicaciones unificadas."
+            "y reiteramos nuestro compromiso de seguir mejorando el soporte "
         )
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
@@ -199,7 +198,7 @@ def ivr_llm():
     gather2.say(
         "¿Puedo ayudarte en algo más? "
         "Si necesitas un humano, di 'humano' o marca cero. "
-        "Si no respondes, finalizaré la llamada.",
+        "Si no me respondes, finalizaré la llamada.",
         language="es-ES",
         voice="Polly.Lupe"
     )
