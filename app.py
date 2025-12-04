@@ -19,7 +19,7 @@ session = requests.Session()  # menor latencia
 
 
 # =========================
-# PROMPT DEL AGENTE IA (CON SALUDO INCLUIDO)
+# PROMPT DEL AGENTE IA (GPT incluirá saludo festivo)
 # =========================
 SYSTEM_PROMPT = """
 Eres un Ingeniero de Soporte Especializado de Nuxway Technology.
@@ -82,7 +82,7 @@ def llamar_gpt(prompt_usuario: str) -> str:
 
         return r.json()["choices"][0]["message"]["content"]
 
-    except Exception as e:
+    except Exception:
         logging.exception("[GPT] Error")
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
@@ -118,12 +118,12 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # ================
+    # =========================
     # 1. SIN INPUT
-    # ================
+    # =========================
     if not speech and not digits:
 
-        # Followup: si no responde → cuelga
+        # Followup → cuelga directo
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -132,7 +132,7 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Initial: repetir hasta 3 veces
+        # Initial → repetir máximo 2 veces y colgar en la 3
         if attempt >= 3:
             vr.say(
                 "No escuché respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -142,9 +142,30 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Repetir mensaje inicial
+        # Preparamos el siguiente intento
         next_attempt = attempt + 1
 
+        # ============
+        # MENSAJE INICIAL PERSONALIZADO
+        # ============
+        mensaje_base = (
+            "¡Hola! Soy el Agente con Inteligencia Artificial de Nuxway Technology. "
+            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+        )
+
+        # Intento 1 y 2 → repetir más claramente
+        if attempt == 1:
+            mensaje = mensaje_base
+        elif attempt == 2:
+            mensaje = (
+                mensaje_base +
+                " Te lo repito nuevamente por si no me escuchaste. " +
+                mensaje_base
+            )
+        else:
+            mensaje = mensaje_base
+
+        # ============
         gather = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -153,9 +174,9 @@ def ivr_llm():
             timeout=4,
             speech_timeout="auto"
         )
+
         gather.say(
-            "¡Hola! Soy el Agente con Inteligencia Artificial de Nuxway Technology. "
-            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?",
+            mensaje,
             language="es-ES",
             voice="Polly.Lupe"
         )
@@ -164,26 +185,26 @@ def ivr_llm():
         return Response(str(vr), mimetype="text/xml")
 
 
-    # ================
+    # =========================
     # 2. Pidió humano
-    # ================
+    # =========================
     text_lower = (speech or "").lower()
 
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
 
-    # ================
-    # 3. RESPUESTA GPT (SIN SALUDO FIJO)
-    # ================
+    # =========================
+    # 3. RESPUESTA GPT
+    # =========================
     respuesta_gpt = llamar_gpt(speech or "")
 
-    # El modelo ya incluye el saludo según el PROMPT
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
-    # ================
+
+    # =========================
     # 4. FOLLOWUP
-    # ================
+    # =========================
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
@@ -205,7 +226,7 @@ def ivr_llm():
 
 
 # =========================
-#  TEST
+# HOME
 # =========================
 @app.route("/")
 def home():
