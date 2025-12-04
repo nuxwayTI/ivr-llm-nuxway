@@ -17,9 +17,8 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 session = requests.Session()  # menor latencia
 
-
 # =========================
-# PROMPT DEL AGENTE IA (GPT incluirá saludo festivo)
+# PROMPT DEL AGENTE IA
 # =========================
 SYSTEM_PROMPT = """
 Eres un Ingeniero de Soporte Especializado de Nuxway Technology.
@@ -73,11 +72,12 @@ def llamar_gpt(prompt_usuario: str) -> str:
     t0 = time.monotonic()
 
     try:
-        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=5)
+        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=6)
         lat = time.monotonic() - t0
         logging.info(f"[GPT] {r.status_code} | {lat:.2f} s")
 
         if r.status_code != 200:
+            logging.info(f"[GPT] Error body: {r.text[:300]}")
             return "Tengo problemas con el servicio de inteligencia artificial en este momento."
 
         return r.json()["choices"][0]["message"]["content"]
@@ -88,7 +88,7 @@ def llamar_gpt(prompt_usuario: str) -> str:
 
 
 # =========================
-#  TRANSFERENCIA
+#  TRANSFERENCIA A HUMANO
 # =========================
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
@@ -118,12 +118,12 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # =========================
-    # 1. SIN INPUT
-    # =========================
+    # ==========================================================
+    # 1. NO HAY INPUT (SILENCIO)
+    # ==========================================================
     if not speech and not digits:
 
-        # Followup → cuelga directo
+        # Followup: si no responde → cuelga
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -132,86 +132,75 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Initial → repetir máximo 2 veces y colgar en la 3
+        # Initial: permitir 2 repeticiones + 1 colgado (total 3 intentos)
         if attempt >= 3:
             vr.say(
-                "No escuché respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
+                "No recibí respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
                 language="es-ES",
                 voice="Polly.Lupe"
             )
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Preparamos el siguiente intento
         next_attempt = attempt + 1
 
-        # ============
-        # MENSAJE INICIAL PERSONALIZADO
-        # ============
-        mensaje_base = (
+        # =============================
+        # MENSAJE INICIAL CON REPETICIÓN
+        # =============================
+        mensaje_inicial = (
             "¡Hola! Soy el Agente con Inteligencia Artificial de Nuxway Technology. "
             "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
         )
 
-        # Intento 1 y 2 → repetir más claramente
         if attempt == 1:
-            mensaje = mensaje_base
+            mensaje_repetido = mensaje_inicial
         elif attempt == 2:
-            mensaje = (
-                mensaje_base +
+            mensaje_repetido = (
+                mensaje_inicial +
                 " Te lo repito nuevamente por si no me escuchaste. " +
-                mensaje_base
+                mensaje_inicial
             )
         else:
-            mensaje = mensaje_base
+            mensaje_repetido = mensaje_inicial
 
-        # ============
         gather = Gather(
             input="speech dtmf",
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=4,
-            speech_timeout="auto"
+            timeout=6,              # más tiempo para hablar
+            speech_timeout="2"      # espera 2 segundos de silencio real
         )
-
-        gather.say(
-            mensaje,
-            language="es-ES",
-            voice="Polly.Lupe"
-        )
+        gather.say(mensaje_repetido, language="es-ES", voice="Polly.Lupe")
 
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-
-    # =========================
+    # ==========================================================
     # 2. Pidió humano
-    # =========================
+    # ==========================================================
     text_lower = (speech or "").lower()
 
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
-
-    # =========================
+    # ==========================================================
     # 3. RESPUESTA GPT
-    # =========================
+    # ==========================================================
     respuesta_gpt = llamar_gpt(speech or "")
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
-
-    # =========================
-    # 4. FOLLOWUP
-    # =========================
+    # ==========================================================
+    # 4. FOLLOWUP (para continuar la conversación)
+    # ==========================================================
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
         action="/ivr-llm?phase=followup",
         method="POST",
-        timeout=4,
-        speech_timeout="auto"
+        timeout=6,
+        speech_timeout="2"
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? "
@@ -226,7 +215,7 @@ def ivr_llm():
 
 
 # =========================
-# HOME
+#  HOME
 # =========================
 @app.route("/")
 def home():
@@ -235,5 +224,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
 
