@@ -180,21 +180,33 @@ def transferir_a_agente(vr: VoiceResponse) -> Response:
 def ivr_llm():
     """
     Webhook que Twilio llama con SpeechResult / Digits.
-    Usa un parámetro 'phase' para saber si es primera vez o seguimiento.
+    Usa:
+      - phase: "initial" o "followup"
+      - attempt: cuántas veces ya se dijo el mensaje inicial (1 a 3)
     """
     t_inicio = time.monotonic()
 
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
     phase = request.args.get("phase", "initial")  # "initial" o "followup"
+    # attempt = veces que ya se reprodujo el mensaje inicial
+    # si no viene, asumimos primera vez = 1
+    attempt_str = request.args.get("attempt", "1")
+    try:
+        attempt = int(attempt_str)
+    except ValueError:
+        attempt = 1
 
-    logging.info(f"[IVR] Phase: {phase} | SpeechResult: {speech} | Digits: {digits}")
+    logging.info(
+        f"[IVR] Phase: {phase} | Attempt: {attempt} | "
+        f"SpeechResult: {speech} | Digits: {digits}"
+    )
 
     vr = VoiceResponse()
 
     # 1) Sin input (tanto en initial como followup)
     if not speech and not digits:
-        # Si es followup y no respondió, colgamos elegante
+        # Caso followup: si no responde, colgamos directo
         if phase == "followup":
             vr.say(
                 "No recibí ninguna respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
@@ -206,12 +218,29 @@ def ivr_llm():
             logging.info(f"[IVR] Sin respuesta en followup, llamada terminada. Handler tomó: {t_fin - t_inicio:.2f} s")
             return Response(str(vr), mimetype="text/xml")
 
-        # Primera vez: mensaje inicial DEL PROMPT
+        # Caso initial: repetimos el mensaje hasta 3 veces total
+        if attempt >= 3:
+            # Ya se reprodujo 3 veces y sigue callado: despedida y cuelgue
+            vr.say(
+                "No recibí ninguna respuesta. Muchas gracias por comunicarse con Nuxway Technology. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe",
+            )
+            vr.hangup()
+            t_fin = time.monotonic()
+            logging.info(
+                f"[IVR] Sin respuesta tras {attempt} intentos en initial, llamada terminada. "
+                f"Handler tomó: {t_fin - t_inicio:.2f} s"
+            )
+            return Response(str(vr), mimetype="text/xml")
+
+        # Reproducir nuevamente el mensaje inicial (con attempt+1)
+        next_attempt = attempt + 1
         gather = Gather(
             input="speech dtmf",
             num_digits=1,
             language="es-ES",
-            action="/ivr-llm",   # sigue yendo a /ivr-llm (phase=initial)
+            action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
             timeout=4,
             speech_timeout="auto"
@@ -224,14 +253,11 @@ def ivr_llm():
         )
         vr.append(gather)
 
-        vr.say(
-            "No escuché ninguna respuesta. Hasta luego.",
-            language="es-ES",
-            voice="Polly.Lupe",
-        )
-
         t_fin = time.monotonic()
-        logging.info(f"[IVR] Sin input en fase initial, handler tomó: {t_fin - t_inicio:.2f} s")
+        logging.info(
+            f"[IVR] Sin input en fase initial, intento {attempt}, "
+            f"se repetirá el mensaje. Handler tomó: {t_fin - t_inicio:.2f} s"
+        )
         return Response(str(vr), mimetype="text/xml")
 
     # 2) Detectar si pidió humano
@@ -256,7 +282,7 @@ def ivr_llm():
     )
 
     # 4) Segundo gather para continuar la conversación
-    #    Ahora marcamos phase=followup para que si NO responde, cuelgue.
+    #    Ahora usamos phase=followup: si no responde, colgamos directo.
     gather2 = Gather(
         input="speech dtmf",
         num_digits=1,
@@ -306,5 +332,4 @@ def home():
 if __name__ == "__main__":
     # Para local está bien debug=True. En Render normalmente no.
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
