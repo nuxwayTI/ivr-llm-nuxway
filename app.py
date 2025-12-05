@@ -5,7 +5,7 @@ from flask import Flask, request, Response, send_from_directory, url_for
 import requests
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
-# ================== CONFIGURACIÓN ==================
+# ================== CONFIGURACIÓN BÁSICA ==================
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,50 +16,54 @@ AUDIO_DIR = os.path.join(os.path.dirname(__file__), "static", "audio")
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVEN_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID", "").strip()
 ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
 
 logger.info(f"[BOOT] ELEVEN_API_KEY inicia: {ELEVEN_API_KEY[:6]}")
-logger.info(f"[BOOT] ELEVEN_AGENT_ID: {ELEVEN_AGENT_ID}")
 logger.info(f"[BOOT] ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
 
-# ================== ELEVENLABS AGENT ==================
+if not ELEVEN_API_KEY:
+    logger.warning("⚠️ Falta ELEVENLABS_API_KEY en Render")
 
-def elevenlabs_agent(text):
+if not ELEVEN_VOICE_ID:
+    logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en Render")
+
+
+# ================== AGENTE LOCAL NUXWAY (SIN OPENAI) ==================
+
+def agente_nuxway(user_text: str) -> str:
     """
-    Envía texto al agente conversacional de ElevenLabs.
-    Devuelve la respuesta en texto.
+    Agente simple hecho en Python.
+    Aquí puedes agregar reglas según palabras clave.
+    NO usa OpenAI ni ElevenLabs Agent.
     """
-    url = f"https://api.elevenlabs.io/v1/convai/chat"
+    texto = (user_text or "").lower()
 
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json"
-    }
+    if "hola" in texto or "buenas" in texto:
+        return "Hola, soy el agente virtual de Nuxway. ¿Preguntas por PBX, por redes o por call center?"
 
-    data = {
-        "agent_id": ELEVEN_AGENT_ID,
-        "text": text
-    }
+    if "pbx" in texto or "troncal" in texto or "sip" in texto:
+        return "Puedes decirme si quieres ayuda con configuración de troncales SIP, extensiones o IVR."
 
-    try:
-        resp = requests.post(url, json=data, headers=headers, timeout=20)
-        resp.raise_for_status()
-        result = resp.json()
-        reply = result.get("reply", "Lo siento, no entendí.")
-        logger.info(f"Agente ElevenLabs respondió: {reply}")
-        return reply
-    except Exception:
-        logger.exception("Error llamando al agente ElevenLabs")
-        return "Lo siento, hubo un problema procesando tu consulta."
+    if "twilio" in texto:
+        return "Trabajamos con Twilio para integrar llamadas con tu PBX IP y con inteligencia artificial."
+
+    if "soporte" in texto or "ayuda" in texto:
+        return "Con gusto te ayudo. Dime brevemente cuál es tu problema y en qué sistema, por ejemplo PBX, WiFi o VPN."
+
+    # Respuesta por defecto
+    return "Te escucho. Cuéntame con más detalle qué necesitas y en qué plataforma estás trabajando."
 
 
 # ================== ELEVENLABS TTS ==================
 
-def elevenlabs_tts(text):
+def elevenlabs_tts(text: str) -> str:
     """
     Convierte texto a MP3 usando ElevenLabs.
     """
+    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+        logger.error("❌ No hay API KEY o VOICE ID configurado para ElevenLabs.")
+        return ""
+
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
 
     headers = {
@@ -70,7 +74,7 @@ def elevenlabs_tts(text):
 
     data = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",
+        "model_id": "eleven_multilingual_v2",  # cambia a eleven_turbo_v2 si tu plan lo requiere
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.8
@@ -79,7 +83,10 @@ def elevenlabs_tts(text):
 
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=40)
-        resp.raise_for_status()
+
+        if resp.status_code != 200:
+            logger.error(f"❌ Error ElevenLabs {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
 
         filename = f"tts_{int(time.time()*1000)}.mp3"
         filepath = os.path.join(AUDIO_DIR, filename)
@@ -87,7 +94,9 @@ def elevenlabs_tts(text):
         with open(filepath, "wb") as f:
             f.write(resp.content)
 
-        return url_for("serve_audio", filename=filename, _external=True)
+        audio_url = url_for("serve_audio", filename=filename, _external=True)
+        logger.info(f"✅ Audio generado: {audio_url}")
+        return audio_url
 
     except Exception:
         logger.exception("Error generando TTS ElevenLabs")
@@ -98,7 +107,7 @@ def elevenlabs_tts(text):
 
 @app.route("/", methods=["GET"])
 def index():
-    return "ElevenLabs Conversational Agent activo", 200
+    return "IVR Nuxway + ElevenLabs TTS (sin OpenAI)", 200
 
 
 @app.route("/audio/<path:filename>", methods=["GET"])
@@ -113,13 +122,19 @@ def voice_webhook():
     user_text = request.values.get("SpeechResult", "")
     logger.info(f"Usuario dijo: {user_text}")
 
+    # PRIMER TURNO: no hay texto todavía
     if not user_text:
         saludo = (
-            "Hola, soy tu agente conversacional de Eleven Labs. "
-            "Dime en qué puedo ayudarte."
+            "Hola, soy el agente virtual de Nuxway con voz de Eleven Labs. "
+            "Dime brevemente en qué necesitas ayuda."
         )
-        audio = elevenlabs_tts(saludo)
-        vr.play(audio)
+        audio_saludo = elevenlabs_tts(saludo)
+
+        if audio_saludo:
+            vr.play(audio_saludo)
+        else:
+            vr.say("Hola, soy el agente virtual de Nuxway. ¿En qué puedo ayudarte?",
+                   language="es-ES")
 
         gather = Gather(
             input="speech",
@@ -130,10 +145,8 @@ def voice_webhook():
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-    # 1. AGENTE ELEVENLABS
-    respuesta_texto = elevenlabs_agent(user_text)
-
-    # 2. TTS
+    # SIGUIENTES TURNOS: ya habló el usuario
+    respuesta_texto = agente_nuxway(user_text)
     audio_url = elevenlabs_tts(respuesta_texto)
 
     if audio_url:
@@ -141,7 +154,7 @@ def voice_webhook():
     else:
         vr.say(respuesta_texto, language="es-ES")
 
-    # 3. Continuar conversación
+    # Dejar la conversación abierta
     gather = Gather(
         input="speech",
         action="/voice",
@@ -158,5 +171,6 @@ def voice_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
 
