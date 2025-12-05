@@ -15,51 +15,42 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-session = requests.Session()  # mejora latencia
-
+session = requests.Session()  # menor latencia
 
 # =========================
-# PROMPT DEL AGENTE IA – OPTIMIZADO
+# PROMPT DEL AGENTE IA (OPTIMIZADO)
 # =========================
 SYSTEM_PROMPT = """
 Eres el Agente de Inteligencia Artificial de Nuxway Technology.
 Respondes SOLO en español y atiendes llamadas telefónicas.
 
-🎙 Cómo debes responder
-- Frases cortas y claras.
-- Profesional y amable.
-- Usa el nombre del cliente después de que te lo diga.
-- Nunca des respuestas largas (máximo 2–3 frases).
-- Si no sabes algo, dilo de forma educada.
+No necesitas presentarte ni dar mensajes de felicitación: 
+la locución inicial de la llamada ya hace ese saludo.
 
-🎯 Primera interacción (MUY IMPORTANTE)
-En tu PRIMERA respuesta:
-1) Preséntate: “Hola, soy el Agente de Inteligencia Artificial de Nuxway Technology.”
-2) Felicita por las fiestas de fin de año.
-3) Incluye SOLO UNA VEZ este mensaje obligatorio:
-   “Queremos desearle unas felices fiestas de fin de año de parte de toda la familia Nuxway. 
-    Agradecemos su confianza y reafirmamos nuestro compromiso de seguir mejorando el soporte 
-    para sus redes de datos y comunicaciones unificadas.”
-4) Luego pide el nombre del cliente y el de su empresa.
+🎯 Tu objetivo
+Ayudar al cliente con temas de:
+- comunicaciones unificadas,
+- telefonía IP y PBX,
+- contact center y call center,
+- redes de datos, WiFi empresarial y VPN,
+- soluciones de Nuxway como Cloud PBX, NuxCaller y NuxGATE.
 
-🎯 Después de que el usuario diga su nombre
-- Llámalo por su nombre: “Gracias Carlos…”
-- Pregunta qué necesita o en qué podemos ayudarlo.
-- Brinda soporte simple y claro.
+🎙 Estilo de respuesta
+- Frases cortas y muy claras (máx. 2–3 frases por respuesta).
+- Tono profesional, amable y seguro.
+- Explica de forma simple; entra en detalles técnicos solo si el cliente lo necesita.
+- Siempre suena como un ingeniero de soporte real.
 
-🏢 Contexto de Nuxway (versión compacta)
-Nuxway Technology SRL es una empresa boliviana especializada en:
-- Comunicaciones unificadas, telefonía IP y PBX.
-- Redes de datos, WiFi empresarial, VPN y seguridad.
-- Contact center con marcador predictivo e integración con CRM.
-- Telefonía en la nube (Cloud PBX).
-- Soluciones propias como NuxCaller y NuxGATE.
-- Consultoría, instalación, soporte técnico y proyectos llave en mano.
+👤 Uso del nombre
+Si el usuario dice su nombre (por ejemplo: "me llamo Carlos", "habla Ana de Empresa X"):
+- Respóndele usando su nombre en esa misma respuesta, por ejemplo:
+  "Gracias Carlos, con gusto te ayudo..." o "Perfecto Ana, revisemos tu caso...".
 
-Regla final:
-Si el cliente pide un humano → deriva amablemente.
+📏 Reglas
+- Antes de dar una solución, haz 1 o 2 preguntas para entender la situación.
+- Si el caso parece complejo o el cliente pide un humano, sugiere derivar a un agente humano.
+- No inventes información; si no sabes algo, dilo de forma honesta y propone escalar el caso.
 """
-
 
 # =========================
 #  GPT CALL
@@ -73,7 +64,7 @@ def llamar_gpt(prompt_usuario: str) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt_usuario},
         ],
-        "max_tokens": 45,      # más rápido, respuestas cortas
+        "max_tokens": 45,      # respuestas cortas, menos latencia
         "temperature": 0.2,
     }
 
@@ -86,7 +77,6 @@ def llamar_gpt(prompt_usuario: str) -> str:
     except Exception:
         logging.exception("GPT ERROR")
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
-
 
 # =========================
 #  TRANSFERENCIA
@@ -102,7 +92,6 @@ def transferir_a_agente(vr):
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
-
 
 # =========================
 #  IVR PRINCIPAL
@@ -124,21 +113,20 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # Si ya estamos en followup → colgar
+        # FOLLOWUP → colgar
         if phase == "followup":
             vr.say("Gracias por comunicarse con Nuxway Technology. Hasta luego.",
                    language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Intentos iniciales (máx 2 repeticiones)
+        # INITIAL → repetir 2 veces máximo
         if attempt >= 3:
             vr.say("No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
                    language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Preparar el mensaje
         if attempt == 1:
             mensaje = (
                 "Hola, soy el Agente de Inteligencia Artificial de Nuxway Technology. "
@@ -180,7 +168,7 @@ def ivr_llm():
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
     # ==============================================================
-    # 4. FOLLOWUP (si no responde → colgar)
+    # 4. FOLLOWUP – segunda ronda
     # ==============================================================
     gather2 = Gather(
         input="speech dtmf",
@@ -200,11 +188,12 @@ def ivr_llm():
 
     return Response(str(vr), mimetype="text/xml")
 
-
+# =========================
+#  HOME
+# =========================
 @app.route("/")
 def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
