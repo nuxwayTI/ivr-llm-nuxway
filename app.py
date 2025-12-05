@@ -17,14 +17,8 @@ AUDIO_DIR = os.path.join(os.path.dirname(__file__), "static", "audio")
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --------- ENV VARS (Render / .env) ---------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()  # p.ej: "21m00Tcm4TlvDq8ikWAM"
-
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-
-if not OPENAI_API_KEY:
-    logger.warning("⚠️ Falta OPENAI_API_KEY en el entorno")
+ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()  # ejemplo: "21m00Tcm4TlvDq8ikWAM"
 
 if not ELEVEN_API_KEY:
     logger.warning("⚠️ Falta ELEVENLABS_API_KEY en el entorno")
@@ -33,53 +27,12 @@ if not ELEVEN_VOICE_ID:
     logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en el entorno")
 
 
-# ================== FUNCIONES AUXILIARES ==================
-
-def ask_openai(user_text: str) -> str:
-    """
-    Llama a OpenAI para generar la respuesta del asistente.
-    Puedes ajustar el 'system' según tu caso de uso PBX / Nuxway.
-    """
-    if not OPENAI_API_KEY:
-        return "Lo siento, no tengo configurada la clave de OpenAI."
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    data = {
-        "model": "gpt-4.1-mini",  # ajusta el modelo si quieres otro
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Eres el agente de soporte de Nuxway Technology. "
-                    "Respondes corto, claro y profesional sobre PBX IP, SIP, "
-                    "telefonía, redes, call center y soluciones de Nuxway."
-                ),
-            },
-            {"role": "user", "content": user_text},
-        ],
-        "temperature": 0.3,
-    }
-
-    try:
-        resp = requests.post(OPENAI_URL, headers=headers, json=data, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
-        answer = payload["choices"][0]["message"]["content"].strip()
-        logger.info(f"OpenAI respondió: {answer}")
-        return answer
-    except Exception as e:
-        logger.exception("Error llamando a OpenAI")
-        return "Hubo un problema interno procesando tu consulta."
-
+# ================== FUNCIÓN ELEVENLABS TTS ==================
 
 def elevenlabs_tts(text: str) -> str:
     """
-    Llama a ElevenLabs para convertir texto en audio (MP3).
-    Devuelve la URL absoluta del archivo para que Twilio haga <Play>.
+    Convierte texto en audio MP3 usando ElevenLabs.
+    Devuelve la URL para que Twilio la reproduzca.
     """
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
         logger.error("Faltan ELEVENLABS_API_KEY o ELEVENLABS_VOICE_ID")
@@ -95,7 +48,7 @@ def elevenlabs_tts(text: str) -> str:
 
     data = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",  # modelo recomendado (ajustable)
+        "model_id": "eleven_multilingual_v2",
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.8,
@@ -106,7 +59,6 @@ def elevenlabs_tts(text: str) -> str:
         resp = requests.post(url, headers=headers, json=data, timeout=40)
         resp.raise_for_status()
 
-        # Nombre único para el archivo
         filename = f"tts_{int(time.time() * 1000)}.mp3"
         filepath = os.path.join(AUDIO_DIR, filename)
 
@@ -116,6 +68,7 @@ def elevenlabs_tts(text: str) -> str:
         audio_url = url_for("serve_audio", filename=filename, _external=True)
         logger.info(f"Audio generado en: {audio_url}")
         return audio_url
+
     except Exception as e:
         logger.exception("Error llamando a ElevenLabs")
         return ""
@@ -123,40 +76,27 @@ def elevenlabs_tts(text: str) -> str:
 
 # ================== RUTAS FLASK ==================
 
-
 @app.route("/", methods=["GET"])
 def index():
-    return "PBX + OpenAI + ElevenLabs: OK", 200
+    return "PBX + ElevenLabs funcionando", 200
 
 
 @app.route("/audio/<path:filename>", methods=["GET"])
 def serve_audio(filename):
-    """
-    Twilio va a pedir aquí el MP3 generado por ElevenLabs.
-    """
+    """Twilio descargará el MP3 desde aquí."""
     return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg")
 
 
 @app.route("/voice", methods=["POST"])
 def voice_webhook():
-    """
-    Webhook de Twilio Voice.
-    - Si no hay texto del usuario todavía, pide que hable.
-    - Si hay SpeechResult / Digits, manda a OpenAI y luego TTS con ElevenLabs.
-    """
     vr = VoiceResponse()
 
-    # Intentamos recoger lo que dijo el usuario
-    speech_result = request.values.get("SpeechResult", "")
-    transcription = request.values.get("TranscriptionText", "")
-    digits = request.values.get("Digits", "")
+    # Obtenemos lo que dijo el usuario
+    user_speech = request.values.get("SpeechResult", "")
+    logger.info(f"Usuario dijo: {user_speech}")
 
-    user_text = speech_result or transcription or digits
-
-    logger.info(f"Texto recibido del usuario: '{user_text}'")
-
-    if not user_text:
-        # Primer ingreso: pedimos que hable
+    # Si es la primera vez, pedimos que hable
+    if not user_speech:
         gather = Gather(
             input="speech",
             action="/voice",
@@ -164,23 +104,22 @@ def voice_webhook():
             language="es-ES",
             speech_timeout="auto",
         )
-        gather.say("Hola, soy el asistente de Nuxway. ¿En qué puedo ayudarte?")
+        gather.say("Hola. Estoy probando Eleven Labs. Por favor, dime algo.")
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-    # Ya tenemos algo del usuario -> pedimos respuesta a OpenAI
-    answer_text = ask_openai(user_text)
+    # ------ RESPUESTA DE PRUEBA ------
+    respuesta = "Esta es una respuesta generada con Eleven Labs. Funciona correctamente."
 
-    # Convertimos la respuesta a audio con ElevenLabs
-    audio_url = elevenlabs_tts(answer_text)
+    # Convertimos a voz
+    audio_url = elevenlabs_tts(respuesta)
 
-    if not audio_url:
-        # Si falló ElevenLabs, usamos <Say> como fallback
-        vr.say(answer_text, language="es-ES", voice="alice")
-    else:
+    if audio_url:
         vr.play(audio_url)
+    else:
+        vr.say("Lo siento, hubo un problema generando el audio.", language="es-ES")
 
-    # Preparamos un nuevo Gather para seguir la conversación
+    # Nuevo gather para seguir interactuando
     gather = Gather(
         input="speech",
         action="/voice",
@@ -198,5 +137,4 @@ def voice_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
 
