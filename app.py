@@ -1,200 +1,202 @@
-from flask import Flask, request, Response
-from twilio.twiml.voice_response import VoiceResponse, Gather
 import os
-import logging
-import requests
 import time
+import logging
+from flask import Flask, request, Response, send_from_directory, url_for
+import requests
+from twilio.twiml.voice_response import VoiceResponse, Gather
+
+# ================== CONFIGURACIÓN BÁSICA ==================
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# =========================
-#  CONFIG OPENAI
-# =========================
+# Directorio donde guardaremos los audios generados por ElevenLabs
+AUDIO_DIR = os.path.join(os.path.dirname(__file__), "static", "audio")
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
+# --------- ENV VARS (Render / .env) ---------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()  # p.ej: "21m00Tcm4TlvDq8ikWAM"
+
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-session = requests.Session()  # menor latencia
+if not OPENAI_API_KEY:
+    logger.warning("⚠️ Falta OPENAI_API_KEY en el entorno")
 
-# =========================
-# PROMPT DEL AGENTE IA (OPTIMIZADO)
-# =========================
-SYSTEM_PROMPT = """
-Eres el Agente de Inteligencia Artificial de Nuxway Technology.
-Respondes SOLO en español y atiendes llamadas telefónicas.
+if not ELEVEN_API_KEY:
+    logger.warning("⚠️ Falta ELEVENLABS_API_KEY en el entorno")
 
-Necesitas presentarte y dar mensajes de felicitación por fiestas de fin de anio: 
+if not ELEVEN_VOICE_ID:
+    logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en el entorno")
 
 
-🎯 Tu objetivo
-Ayudar al cliente con temas de:
-- comunicaciones unificadas,
-- telefonía IP y PBX,
-- contact center y call center,
-- redes de datos, WiFi empresarial y VPN,
-- soluciones de Nuxway como Cloud PBX, NuxCaller y NuxGATE.
+# ================== FUNCIONES AUXILIARES ==================
 
-🎙 Estilo de respuesta
-- Frases cortas y muy claras (máx. 2–3 frases por respuesta).
-- Tono profesional, amable y seguro.
-- Explica de forma simple; entra en detalles técnicos solo si el cliente lo necesita.
-- Siempre suena como un ingeniero de soporte real.
+def ask_openai(user_text: str) -> str:
+    """
+    Llama a OpenAI para generar la respuesta del asistente.
+    Puedes ajustar el 'system' según tu caso de uso PBX / Nuxway.
+    """
+    if not OPENAI_API_KEY:
+        return "Lo siento, no tengo configurada la clave de OpenAI."
 
-👤 Uso del nombre
-Si el usuario dice su nombre (por ejemplo: "me llamo Carlos", "habla Ana de Empresa X"):
-- Respóndele usando su nombre en esa misma respuesta, por ejemplo:
-  "Gracias Carlos, con gusto te ayudo..." o "Perfecto Ana, revisemos tu caso...".
-
-📏 Reglas
-- Antes de dar una solución, haz 1 o 2 preguntas para entender la situación.
-- Si el caso parece complejo o el cliente pide un humano, sugiere derivar a un agente humano.
-- No inventes información; si no sabes algo, dilo de forma honesta y propone escalar el caso.
-"""
-
-# =========================
-#  GPT CALL
-# =========================
-def llamar_gpt(prompt_usuario: str) -> str:
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
     data = {
-        "model": "gpt-4.1-mini",
+        "model": "gpt-4.1-mini",  # ajusta el modelo si quieres otro
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt_usuario},
+            {
+                "role": "system",
+                "content": (
+                    "Eres el agente de soporte de Nuxway Technology. "
+                    "Respondes corto, claro y profesional sobre PBX IP, SIP, "
+                    "telefonía, redes, call center y soluciones de Nuxway."
+                ),
+            },
+            {"role": "user", "content": user_text},
         ],
-        "max_tokens": 45,      # respuestas cortas, menos latencia
-        "temperature": 0.2,
+        "temperature": 0.3,
     }
 
     try:
-        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=6)
-        if r.status_code != 200:
-            logging.error(r.text)
-            return "Tengo problemas con la inteligencia artificial en este momento."
-        return r.json()["choices"][0]["message"]["content"]
-    except Exception:
-        logging.exception("GPT ERROR")
-        return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
+        resp = requests.post(OPENAI_URL, headers=headers, json=data, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+        answer = payload["choices"][0]["message"]["content"].strip()
+        logger.info(f"OpenAI respondió: {answer}")
+        return answer
+    except Exception as e:
+        logger.exception("Error llamando a OpenAI")
+        return "Hubo un problema interno procesando tu consulta."
 
-# =========================
-#  TRANSFERENCIA
-# =========================
-AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
-def transferir_a_agente(vr):
-    vr.say(
-        "Te voy a comunicar con un agente humano. Por favor espera.",
-        language="es-ES",
-        voice="Polly.Lupe"
-    )
-    d = vr.dial()
-    d.sip(AGENT_SIP)
-    return Response(str(vr), mimetype="text/xml")
+def elevenlabs_tts(text: str) -> str:
+    """
+    Llama a ElevenLabs para convertir texto en audio (MP3).
+    Devuelve la URL absoluta del archivo para que Twilio haga <Play>.
+    """
+    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+        logger.error("Faltan ELEVENLABS_API_KEY o ELEVENLABS_VOICE_ID")
+        return ""
 
-# =========================
-#  IVR PRINCIPAL
-# =========================
-@app.route("/ivr-llm", methods=["POST"])
-def ivr_llm():
-    speech = request.values.get("SpeechResult")
-    digits = request.values.get("Digits")
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
 
-    phase = request.args.get("phase", "initial")
-    attempt = int(request.args.get("attempt", "1"))
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
 
-    logging.info(f"[IVR] phase={phase} attempt={attempt} speech={speech}")
+    data = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",  # modelo recomendado (ajustable)
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.8,
+        },
+    }
 
+    try:
+        resp = requests.post(url, headers=headers, json=data, timeout=40)
+        resp.raise_for_status()
+
+        # Nombre único para el archivo
+        filename = f"tts_{int(time.time() * 1000)}.mp3"
+        filepath = os.path.join(AUDIO_DIR, filename)
+
+        with open(filepath, "wb") as f:
+            f.write(resp.content)
+
+        audio_url = url_for("serve_audio", filename=filename, _external=True)
+        logger.info(f"Audio generado en: {audio_url}")
+        return audio_url
+    except Exception as e:
+        logger.exception("Error llamando a ElevenLabs")
+        return ""
+
+
+# ================== RUTAS FLASK ==================
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "PBX + OpenAI + ElevenLabs: OK", 200
+
+
+@app.route("/audio/<path:filename>", methods=["GET"])
+def serve_audio(filename):
+    """
+    Twilio va a pedir aquí el MP3 generado por ElevenLabs.
+    """
+    return send_from_directory(AUDIO_DIR, filename, mimetype="audio/mpeg")
+
+
+@app.route("/voice", methods=["POST"])
+def voice_webhook():
+    """
+    Webhook de Twilio Voice.
+    - Si no hay texto del usuario todavía, pide que hable.
+    - Si hay SpeechResult / Digits, manda a OpenAI y luego TTS con ElevenLabs.
+    """
     vr = VoiceResponse()
 
-    # ==============================================================
-    # 1. NO INPUT (Silencio)
-    # ==============================================================
-    if not speech and not digits:
+    # Intentamos recoger lo que dijo el usuario
+    speech_result = request.values.get("SpeechResult", "")
+    transcription = request.values.get("TranscriptionText", "")
+    digits = request.values.get("Digits", "")
 
-        # FOLLOWUP → colgar
-        if phase == "followup":
-            vr.say("Gracias por comunicarse con Nuxway Technology. Hasta luego.",
-                   language="es-ES", voice="Polly.Lupe")
-            vr.hangup()
-            return Response(str(vr), mimetype="text/xml")
+    user_text = speech_result or transcription or digits
 
-        # INITIAL → repetir 2 veces máximo
-        if attempt >= 3:
-            vr.say("No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
-                   language="es-ES", voice="Polly.Lupe")
-            vr.hangup()
-            return Response(str(vr), mimetype="text/xml")
+    logger.info(f"Texto recibido del usuario: '{user_text}'")
 
-        if attempt == 1:
-            mensaje = (
-                "Hola, soy el Agente de Inteligencia Artificial de Nuxway Technology. "
-                "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
-            )
-        else:
-            mensaje = (
-                "No logré escucharte. Te repito nuevamente. "
-                "Por favor dime tu nombre y el de tu empresa."
-            )
-
-        next_attempt = attempt + 1
-
+    if not user_text:
+        # Primer ingreso: pedimos que hable
         gather = Gather(
-            input="speech dtmf",
-            language="es-ES",
-            action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
+            input="speech",
+            action="/voice",
             method="POST",
-            timeout=6,
-            speech_timeout="auto"
+            language="es-ES",
+            speech_timeout="auto",
         )
-        gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
+        gather.say("Hola, soy el asistente de Nuxway. ¿En qué puedo ayudarte?")
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-    # ==============================================================
-    # 2. PIDIÓ HUMANO
-    # ==============================================================
-    text_lower = (speech or "").lower()
+    # Ya tenemos algo del usuario -> pedimos respuesta a OpenAI
+    answer_text = ask_openai(user_text)
 
-    if digits == "0" or "humano" in text_lower or "agente" in text_lower:
-        return transferir_a_agente(vr)
+    # Convertimos la respuesta a audio con ElevenLabs
+    audio_url = elevenlabs_tts(answer_text)
 
-    # ==============================================================
-    # 3. GPT
-    # ==============================================================
-    respuesta_gpt = llamar_gpt(speech or "")
+    if not audio_url:
+        # Si falló ElevenLabs, usamos <Say> como fallback
+        vr.say(answer_text, language="es-ES", voice="alice")
+    else:
+        vr.play(audio_url)
 
-    vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
-
-    # ==============================================================
-    # 4. FOLLOWUP – segunda ronda
-    # ==============================================================
-    gather2 = Gather(
-        input="speech dtmf",
-        language="es-ES",
-        action="/ivr-llm?phase=followup",
+    # Preparamos un nuevo Gather para seguir la conversación
+    gather = Gather(
+        input="speech",
+        action="/voice",
         method="POST",
-        timeout=7,
-        speech_timeout="auto"
-    )
-    gather2.say(
-        "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. "
-        "Si no respondes, finalizaré la llamada.",
         language="es-ES",
-        voice="Polly.Lupe"
+        speech_timeout="auto",
     )
-    vr.append(gather2)
+    vr.append(gather)
 
     return Response(str(vr), mimetype="text/xml")
 
-# =========================
-#  HOME
-# =========================
-@app.route("/")
-def home():
-    return "Nuxway IVR LLM – Soporte IA activo ✔"
+
+# ================== MAIN ==================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
+
 
