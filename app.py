@@ -18,9 +18,8 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --------- ENV VARS (Render / .env) ---------
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()  # ejemplo: "21m00Tcm4TlvDq8ikWAM"
+ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
 
-# Logs de arranque para verificar que Render está leyendo las variables
 logger.info(f"[BOOT] ELEVEN_API_KEY empieza con: {ELEVEN_API_KEY[:6]}")
 logger.info(f"[BOOT] ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
 
@@ -36,9 +35,8 @@ if not ELEVEN_VOICE_ID:
 def elevenlabs_tts(text: str) -> str:
     """
     Convierte texto en audio MP3 usando ElevenLabs.
-    Devuelve la URL para que Twilio la reproduzca.
+    Devuelve la URL pública para que Twilio la reproduzca.
     """
-
     logger.info(f"ELEVEN_API_KEY empieza con: {ELEVEN_API_KEY[:6]}")
     logger.info(f"ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
 
@@ -54,6 +52,8 @@ def elevenlabs_tts(text: str) -> str:
         "Accept": "audio/mpeg",
     }
 
+    # Si quieres, cambia el modelo según tu plan:
+    # "eleven_multilingual_v2", "eleven_turbo_v2", etc.
     data = {
         "text": text,
         "model_id": "eleven_multilingual_v2",
@@ -66,12 +66,10 @@ def elevenlabs_tts(text: str) -> str:
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=40)
 
-        # LOG del error real de ElevenLabs
         if resp.status_code != 200:
             logger.error(f"❌ Error ElevenLabs {resp.status_code}: {resp.text}")
             resp.raise_for_status()
 
-        # Guardamos el MP3 en static/audio
         filename = f"tts_{int(time.time() * 1000)}.mp3"
         filepath = os.path.join(AUDIO_DIR, filename)
 
@@ -104,12 +102,22 @@ def serve_audio(filename):
 def voice_webhook():
     vr = VoiceResponse()
 
-    # Obtenemos lo que dijo el usuario por voz
     user_speech = request.values.get("SpeechResult", "")
     logger.info(f"Usuario dijo: {user_speech}")
 
-    # Primera vuelta: pedir al usuario que hable
+    # -------- PRIMER TURNO: NO HAY TEXTO AÚN --------
     if not user_speech:
+        # Saludo inicial con ElevenLabs
+        saludo = "Hola, soy el agente de Nuxway con Eleven Labs. ¿En qué puedo ayudarte?"
+        saludo_url = elevenlabs_tts(saludo)
+
+        if saludo_url:
+            vr.play(saludo_url)
+        else:
+            # Fallback a voz Twilio solo si falla ElevenLabs
+            vr.say("Hola, soy el agente de Nuxway. ¿En qué puedo ayudarte?", language="es-ES")
+
+        # Después del saludo, pedimos que hable
         gather = Gather(
             input="speech",
             action="/voice",
@@ -117,14 +125,17 @@ def voice_webhook():
             language="es-ES",
             speech_timeout="auto",
         )
-        gather.say("Hola, aquí Eleven Labs. Dime algo para probar el audio.")
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-    # Respuesta fija para pruebas
-    respuesta = "Hola. Esta es una prueba de Eleven Labs. Si me escuchas, todo funciona correctamente."
+    # -------- SIGUIENTES TURNOS: YA HABLÓ EL USUARIO --------
 
-    # Convertimos la respuesta a voz
+    # De momento, respuesta fija de prueba
+    respuesta = (
+        "Hola. Esta es una prueba de Eleven Labs. "
+        "Si me escuchas claramente, es que todo salió bien con la integración."
+    )
+
     audio_url = elevenlabs_tts(respuesta)
 
     if audio_url:
@@ -132,7 +143,7 @@ def voice_webhook():
     else:
         vr.say("Lo siento, hubo un problema generando el audio.", language="es-ES")
 
-    # Permitir que el usuario siga hablando
+    # Volvemos a escuchar al usuario (mantener la conversación abierta)
     gather = Gather(
         input="speech",
         action="/voice",
@@ -150,4 +161,5 @@ def voice_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
