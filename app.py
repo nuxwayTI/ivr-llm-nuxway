@@ -20,11 +20,15 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()  # ejemplo: "21m00Tcm4TlvDq8ikWAM"
 
+# Logs de arranque para verificar que Render está leyendo las variables
+logger.info(f"[BOOT] ELEVEN_API_KEY empieza con: {ELEVEN_API_KEY[:6]}")
+logger.info(f"[BOOT] ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
+
 if not ELEVEN_API_KEY:
-    logger.warning("⚠️ Falta ELEVENLABS_API_KEY en el entorno")
+    logger.warning("⚠️ Falta ELEVENLABS_API_KEY en Render")
 
 if not ELEVEN_VOICE_ID:
-    logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en el entorno")
+    logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en Render")
 
 
 # ================== FUNCIÓN ELEVENLABS TTS ==================
@@ -34,8 +38,12 @@ def elevenlabs_tts(text: str) -> str:
     Convierte texto en audio MP3 usando ElevenLabs.
     Devuelve la URL para que Twilio la reproduzca.
     """
+
+    logger.info(f"ELEVEN_API_KEY empieza con: {ELEVEN_API_KEY[:6]}")
+    logger.info(f"ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
+
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
-        logger.error("Faltan ELEVENLABS_API_KEY o ELEVENLABS_VOICE_ID")
+        logger.error("❌ No hay API KEY o VOICE ID configurado.")
         return ""
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
@@ -57,8 +65,13 @@ def elevenlabs_tts(text: str) -> str:
 
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=40)
-        resp.raise_for_status()
 
+        # LOG del error real de ElevenLabs
+        if resp.status_code != 200:
+            logger.error(f"❌ Error ElevenLabs {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+
+        # Guardamos el MP3 en static/audio
         filename = f"tts_{int(time.time() * 1000)}.mp3"
         filepath = os.path.join(AUDIO_DIR, filename)
 
@@ -66,11 +79,11 @@ def elevenlabs_tts(text: str) -> str:
             f.write(resp.content)
 
         audio_url = url_for("serve_audio", filename=filename, _external=True)
-        logger.info(f"Audio generado en: {audio_url}")
+        logger.info(f"✅ Audio generado: {audio_url}")
         return audio_url
 
-    except Exception as e:
-        logger.exception("Error llamando a ElevenLabs")
+    except Exception:
+        logger.exception("❌ Error llamando a ElevenLabs")
         return ""
 
 
@@ -91,11 +104,11 @@ def serve_audio(filename):
 def voice_webhook():
     vr = VoiceResponse()
 
-    # Obtenemos lo que dijo el usuario
+    # Obtenemos lo que dijo el usuario por voz
     user_speech = request.values.get("SpeechResult", "")
     logger.info(f"Usuario dijo: {user_speech}")
 
-    # Si es la primera vez, pedimos que hable
+    # Primera vuelta: pedir al usuario que hable
     if not user_speech:
         gather = Gather(
             input="speech",
@@ -104,14 +117,14 @@ def voice_webhook():
             language="es-ES",
             speech_timeout="auto",
         )
-        gather.say("Hola. Estoy probando Eleven Labs. Por favor, dime algo.")
+        gather.say("Hola, aquí Eleven Labs. Dime algo para probar el audio.")
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-    # ------ RESPUESTA DE PRUEBA ------
-    respuesta = "Esta es una respuesta generada con Eleven Labs. Funciona correctamente."
+    # Respuesta fija para pruebas
+    respuesta = "Hola. Esta es una prueba de Eleven Labs. Si me escuchas, todo funciona correctamente."
 
-    # Convertimos a voz
+    # Convertimos la respuesta a voz
     audio_url = elevenlabs_tts(respuesta)
 
     if audio_url:
@@ -119,7 +132,7 @@ def voice_webhook():
     else:
         vr.say("Lo siento, hubo un problema generando el audio.", language="es-ES")
 
-    # Nuevo gather para seguir interactuando
+    # Permitir que el usuario siga hablando
     gather = Gather(
         input="speech",
         action="/voice",
