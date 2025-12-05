@@ -17,11 +17,18 @@ AUDIO_DIR = os.path.join(os.path.dirname(__file__), "static", "audio")
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # --------- ENV VARS (Render / .env) ---------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
 
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+logger.info(f"[BOOT] OPENAI_API_KEY set: {bool(OPENAI_API_KEY)}")
 logger.info(f"[BOOT] ELEVEN_API_KEY empieza con: {ELEVEN_API_KEY[:6]}")
 logger.info(f"[BOOT] ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
+
+if not OPENAI_API_KEY:
+    logger.warning("⚠️ Falta OPENAI_API_KEY en Render")
 
 if not ELEVEN_API_KEY:
     logger.warning("⚠️ Falta ELEVENLABS_API_KEY en Render")
@@ -30,7 +37,53 @@ if not ELEVEN_VOICE_ID:
     logger.warning("⚠️ Falta ELEVENLABS_VOICE_ID en Render")
 
 
-# ================== FUNCIÓN ELEVENLABS TTS ==================
+# ================== AGENTE: OPENAI ==================
+
+def ask_openai(user_text: str) -> str:
+    """
+    Llama a OpenAI para que actúe como agente de Nuxway.
+    Devuelve texto en español listo para leer con ElevenLabs.
+    """
+    if not OPENAI_API_KEY:
+        logger.error("No hay OPENAI_API_KEY configurado")
+        return "Lo siento, tengo un problema interno y no puedo responder ahora mismo."
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    data = {
+        "model": "gpt-4.1-mini",  # puedes cambiar a otro modelo si quieres
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Eres el agente de soporte de Nuxway Technology. "
+                    "Respondes en español, con frases cortas y claras. "
+                    "Tono profesional, amable y seguro. "
+                    "Ayudas en temas de PBX IP, SIP, telefonía, Twilio, redes, VPN, "
+                    "contact center y soluciones de Nuxway como Cloud PBX, NuxCaller y NuxGATE."
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.3,
+    }
+
+    try:
+        resp = requests.post(OPENAI_URL, headers=headers, json=data, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+        answer = payload["choices"][0]["message"]["content"].strip()
+        logger.info(f"OpenAI respondió: {answer}")
+        return answer
+    except Exception:
+        logger.exception("Error llamando a OpenAI")
+        return "Hubo un problema interno al procesar tu consulta. Por favor, intenta de nuevo."
+
+
+# ================== VOZ: ELEVENLABS TTS ==================
 
 def elevenlabs_tts(text: str) -> str:
     """
@@ -41,7 +94,7 @@ def elevenlabs_tts(text: str) -> str:
     logger.info(f"ELEVEN_VOICE_ID: {ELEVEN_VOICE_ID}")
 
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
-        logger.error("❌ No hay API KEY o VOICE ID configurado.")
+        logger.error("❌ No hay API KEY o VOICE ID configurado para ElevenLabs.")
         return ""
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
@@ -52,8 +105,7 @@ def elevenlabs_tts(text: str) -> str:
         "Accept": "audio/mpeg",
     }
 
-    # Si quieres, cambia el modelo según tu plan:
-    # "eleven_multilingual_v2", "eleven_turbo_v2", etc.
+    # Ajusta el modelo según tu plan: eleven_multilingual_v2, eleven_turbo_v2, etc.
     data = {
         "text": text,
         "model_id": "eleven_multilingual_v2",
@@ -89,7 +141,7 @@ def elevenlabs_tts(text: str) -> str:
 
 @app.route("/", methods=["GET"])
 def index():
-    return "PBX + ElevenLabs funcionando", 200
+    return "PBX + OpenAI + ElevenLabs funcionando", 200
 
 
 @app.route("/audio/<path:filename>", methods=["GET"])
@@ -102,22 +154,25 @@ def serve_audio(filename):
 def voice_webhook():
     vr = VoiceResponse()
 
+    # Texto de Twilio (STT)
     user_speech = request.values.get("SpeechResult", "")
     logger.info(f"Usuario dijo: {user_speech}")
 
     # -------- PRIMER TURNO: NO HAY TEXTO AÚN --------
     if not user_speech:
-        # Saludo inicial con ElevenLabs
-        saludo = "Hola, soy el agente de Nuxway con Eleven Labs. ¿En qué puedo ayudarte?"
+        saludo = (
+            "Hola, soy el agente virtual de Nuxway. "
+            "Estoy usando inteligencia artificial y voz de Eleven Labs. "
+            "Cuéntame en pocas palabras en qué necesitas ayuda."
+        )
         saludo_url = elevenlabs_tts(saludo)
 
         if saludo_url:
             vr.play(saludo_url)
         else:
-            # Fallback a voz Twilio solo si falla ElevenLabs
-            vr.say("Hola, soy el agente de Nuxway. ¿En qué puedo ayudarte?", language="es-ES")
+            vr.say("Hola, soy el agente virtual de Nuxway. ¿En qué puedo ayudarte?",
+                   language="es-ES")
 
-        # Después del saludo, pedimos que hable
         gather = Gather(
             input="speech",
             action="/voice",
@@ -130,20 +185,18 @@ def voice_webhook():
 
     # -------- SIGUIENTES TURNOS: YA HABLÓ EL USUARIO --------
 
-    # De momento, respuesta fija de prueba
-    respuesta = (
-        "Hola. Esta es una prueba de Eleven Labs. "
-        "Si me escuchas claramente, es que todo salió bien con la integración."
-    )
+    # 1) Preguntamos a OpenAI (agente)
+    answer_text = ask_openai(user_speech)
 
-    audio_url = elevenlabs_tts(respuesta)
+    # 2) Convertimos esa respuesta a voz con ElevenLabs
+    audio_url = elevenlabs_tts(answer_text)
 
     if audio_url:
         vr.play(audio_url)
     else:
-        vr.say("Lo siento, hubo un problema generando el audio.", language="es-ES")
+        vr.say(answer_text, language="es-ES")
 
-    # Volvemos a escuchar al usuario (mantener la conversación abierta)
+    # 3) Dejamos la conversación abierta para más preguntas
     gather = Gather(
         input="speech",
         action="/voice",
