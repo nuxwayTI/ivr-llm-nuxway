@@ -27,7 +27,7 @@ Respondes SOLO en español y atiendes llamadas telefónicas.
 Necesitas presentarte y dar mensajes de felicitación por fiestas de fin de anio: 
 
 
-🎯 Tu objetivo
+Tu objetivo secundario
 Ayudar al cliente con temas de:
 - comunicaciones unificadas,
 - telefonía IP y PBX,
@@ -43,8 +43,8 @@ Ayudar al cliente con temas de:
 
 👤 Uso del nombre
 Si el usuario dice su nombre (por ejemplo: "me llamo Carlos", "habla Ana de Empresa X"):
-- Respóndele usando su nombre en esa misma respuesta, por ejemplo:
-  "Gracias Carlos, con gusto te ayudo..." o "Perfecto Ana, revisemos tu caso...".
+- Respóndele usando su nombre en esa misma respuesta y su empresa, por ejemplo:
+  "Gracias Carlos de Nuxway, con gusto te ayudo..." o "Perfecto Ana de Nuxway, revisemos tu caso...".
 
 📏 Reglas
 - Antes de dar una solución, haz 1 o 2 preguntas para entender la situación.
@@ -129,7 +129,7 @@ def ivr_llm():
 
         if attempt == 1:
             mensaje = (
-                "Hola, soy el Agente de Inteligencia Artificial de Nuxway Technology. "
+                "Hola, soy el Agente  con Inteligencia Artificial General de Nuxway Technology. "
                 "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
             )
         else:
