@@ -4,6 +4,7 @@ import os
 import logging
 import requests
 import time
+from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,6 +17,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 session = requests.Session()  # menor latencia
+
+# =========================
+# MEMORIA POR LLAMADA
+# =========================
+# NOTA: Esto guarda la conversación en memoria RAM del proceso.
+# Para producción serio conviene usar Redis o una base externa.
+conversaciones = defaultdict(list)
 
 # =========================
 # PROMPT DEL AGENTE IA (OPTIMIZADO)
@@ -49,12 +57,12 @@ Si NO lo dice o la respuesta es incompleta:
 ======================================================
 📏 REGLAS GENERALES
 ======================================================
-1. Antes de dar una solución, realiza **1 o 2 preguntas para entender mejor el caso**.
+1. Antes de dar una solución, realiza 1 o 2 preguntas para entender mejor el caso.
 2. Si el caso es complejo o el cliente pide hablar con un humano:
    - Sugiere amablemente derivarlo a un agente humano.
 3. No inventes información. Si algo no lo sabes:
    - Di la verdad y ofrece escalar el caso.
-4. Responde siempre con **frases cortas y claras** (máx. 2–3 frases).
+4. Responde siempre con frases cortas y claras (máx. 2–3 frases).
 5. Usa un tono profesional, amable y seguro.
 6. Explica de manera simple; entra en detalles técnicos solo si el cliente lo solicita.
 7. Siempre suena como un ingeniero de soporte real.
@@ -75,6 +83,17 @@ Respuesta del agente:
 En general, el reinicio se hace desde el panel y suele tardar entre 1 y 3 minutos."
 
 ======================================================
+🧮 CÁLCULOS Y RESPUESTAS CON NÚMEROS
+======================================================
+Si el usuario te pide operaciones numéricas simples (sumar, restar, multiplicar, dividir):
+- Calcula el resultado con precisión.
+- Responde de forma breve indicando el resultado explícito.
+
+Ejemplo:
+Usuario: "¿Cuánto es 35 + 7?"
+Agente: "35 más 7 es igual a 42."
+
+======================================================
 🎯 OBJETIVO SECUNDARIO: TEMAS QUE PUEDES ATENDER
 ======================================================
 Puedes ayudar al cliente con temas de:
@@ -83,35 +102,51 @@ Puedes ayudar al cliente con temas de:
 - Contact center y call center
 - Redes IP, WiFi empresarial y VPN
 - Soluciones de Nuxway: Cloud PBX, NuxCaller y NuxGATE
-
 """
 
 
 # =========================
-#  GPT CALL
+#  GPT CALL (CON MEMORIA POR CallSid)
 # =========================
-def llamar_gpt(prompt_usuario: str) -> str:
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    historial = conversaciones[call_sid]  # lista de mensajes previos
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *historial,
+        {"role": "user", "content": prompt_usuario},
+    ]
 
     data = {
         "model": "gpt-4.1-mini",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt_usuario},
-        ],
-        "max_tokens": 45,      # respuestas cortas, menos latencia
+        "messages": messages,
+        "max_tokens": 120,      # un poco más largo para respuestas claras
         "temperature": 0.2,
     }
 
     try:
-        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=6)
+        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=8)
         if r.status_code != 200:
-            logging.error(r.text)
+            logging.error(f"OPENAI ERROR: {r.status_code} {r.text}")
             return "Tengo problemas con la inteligencia artificial en este momento."
-        return r.json()["choices"][0]["message"]["content"]
+
+        json_resp = r.json()
+        respuesta = json_resp["choices"][0]["message"]["content"]
+
+        # Guardamos el turno en la memoria de la llamada
+        conversaciones[call_sid].append({"role": "user", "content": prompt_usuario})
+        conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
+
+        return respuesta
     except Exception:
         logging.exception("GPT ERROR")
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
+
 
 # =========================
 #  TRANSFERENCIA
@@ -128,6 +163,7 @@ def transferir_a_agente(vr):
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
 
+
 # =========================
 #  IVR PRINCIPAL
 # =========================
@@ -135,11 +171,12 @@ def transferir_a_agente(vr):
 def ivr_llm():
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
+    call_sid = request.values.get("CallSid", "unknown-call")
 
     phase = request.args.get("phase", "initial")
     attempt = int(request.args.get("attempt", "1"))
 
-    logging.info(f"[IVR] phase={phase} attempt={attempt} speech={speech}")
+    logging.info(f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} speech={speech} digits={digits}")
 
     vr = VoiceResponse()
 
@@ -150,21 +187,27 @@ def ivr_llm():
 
         # FOLLOWUP → colgar
         if phase == "followup":
-            vr.say("Gracias por comunicarse con Nuxway Technology. Hasta luego.",
-                   language="es-ES", voice="Polly.Lupe")
+            vr.say(
+                "Gracias por comunicarse con Nuxway Technology. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe"
+            )
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
         # INITIAL → repetir 2 veces máximo
         if attempt >= 3:
-            vr.say("No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
-                   language="es-ES", voice="Polly.Lupe")
+            vr.say(
+                "No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe"
+            )
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
         if attempt == 1:
             mensaje = (
-                "Hola, soy el Agente  con Inteligencia Artificial General de Nuxway Technology. "
+                "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
                 "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
             )
         else:
@@ -198,7 +241,11 @@ def ivr_llm():
     # ==============================================================
     # 3. GPT
     # ==============================================================
-    respuesta_gpt = llamar_gpt(speech or "")
+    # Usamos lo que haya: primero voz, si no hay, los dígitos
+    texto_usuario = speech or digits or ""
+    logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
+
+    respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
@@ -223,6 +270,7 @@ def ivr_llm():
 
     return Response(str(vr), mimetype="text/xml")
 
+
 # =========================
 #  HOME
 # =========================
@@ -230,6 +278,7 @@ def ivr_llm():
 def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
 
+if __name__ == "__main__":
+    # En Render normalmente usas el puerto del entorno, pero para local está bien 5000
+    app.run(host="0.0.0.0", port=5000, debug=True)
