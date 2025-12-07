@@ -227,7 +227,8 @@ def ivr_llm():
                 action=f"/ivr-llm?phase=followup&attempt={next_attempt}",
                 method="POST",
                 timeout=7,
-                speech_timeout="auto"
+                speech_timeout="auto",
+                action_on_empty_result=True
             )
             gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
             vr.append(gather)
@@ -262,7 +263,8 @@ def ivr_llm():
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
             timeout=6,
-            speech_timeout="auto"
+            speech_timeout="auto",
+            action_on_empty_result=True
         )
         gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(gather)
@@ -301,7 +303,8 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=7,
-        speech_timeout="auto"
+        speech_timeout="auto",
+        action_on_empty_result=True
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. ",
