@@ -18,12 +18,10 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 session = requests.Session()  # menor latencia
 
 
-
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
-
 
 
 # =========================
@@ -56,7 +54,6 @@ Si NO lo dice:
 - No inventes información.
 - Haz 1 o 2 preguntas antes de responder casos técnicos.
 """
-
 
 
 # =========================
@@ -102,7 +99,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
 
-
 # =========================
 #  TRANSFERENCIA A AGENTE HUMANO
 # =========================
@@ -119,7 +115,6 @@ def transferir_a_agente(vr):
     return Response(str(vr), mimetype="text/xml")
 
 
-
 # =========================
 #  IVR PRINCIPAL
 # =========================
@@ -132,9 +127,25 @@ def ivr_llm():
     phase = request.args.get("phase", "initial")
     attempt = int(request.args.get("attempt", "1"))
 
-    logging.info(f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} speech={speech} digits={digits}")
+    # Posible detección de máquina si Twilio manda AnsweredBy
+    answered_by = request.values.get("AnsweredBy")
+    logging.info(
+        f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} "
+        f"answered_by={answered_by} speech={speech} digits={digits}"
+    )
 
     vr = VoiceResponse()
+
+    # Si Twilio nos dice explícitamente que NO es humano
+    if answered_by and answered_by != "human":
+        vr.say(
+            "Detecté que no hay una persona en la línea. "
+            "Voy a finalizar esta llamada.",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+        vr.hangup()
+        return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
     # 1. NO INPUT (Silencio)
@@ -153,17 +164,15 @@ def ivr_llm():
                 vr.hangup()
                 return Response(str(vr), mimetype="text/xml")
 
-            # mensaje según intento
-            if attempt == 1:
-                mensaje = (
-                    "No te escuché. ¿Puedo ayudarte en algo más? "
-                    "Si necesitas hablar con un humano, di 'humano' o marca cero."
-                )
-            else:
-                mensaje = (
-                    "Sigo sin escucharte. "
-                    "¿Puedo ayudarte en algo más? Di 'humano' si deseas que te transfiera."
-                )
+            # Usamos OpenAI para que la IA hable cuando hay silencio
+            prompt_usuario = (
+                f"El usuario guardó silencio en la llamada (intento {attempt}) "
+                "cuando le preguntaste si necesitaba algo más. "
+                "Vuelve a hablar tú: salúdalo brevemente y pregúntale si necesita algo más, "
+                "recordándole que puede decir 'humano' o marcar cero para hablar con un agente humano. "
+                "Sé muy breve y claro."
+            )
+            respuesta_gpt = llamar_gpt(call_sid, prompt_usuario)
 
             next_attempt = attempt + 1
 
@@ -175,7 +184,8 @@ def ivr_llm():
                 timeout=7,
                 speech_timeout="auto"
             )
-            gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
+            # La IA habla dentro del Gather
+            gather.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
             vr.append(gather)
             return Response(str(vr), mimetype="text/xml")
 
@@ -189,16 +199,13 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        if attempt == 1:
-            mensaje = (
-                "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
-                "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
-            )
-        else:
-            mensaje = (
-                "No logré escucharte. Te repito nuevamente. "
-                "Por favor dime tu nombre y el de tu empresa."
-            )
+        # Usamos OpenAI también para la parte inicial con silencio
+        prompt_usuario = (
+            f"El usuario guardó silencio al inicio de la llamada (intento {attempt}). "
+            "Vuelve a hablar tú: saluda brevemente, desea felices fiestas como indica el sistema, "
+            "y pídele nuevamente que diga su nombre y el de su empresa, de forma muy clara y corta."
+        )
+        respuesta_gpt = llamar_gpt(call_sid, prompt_usuario)
 
         next_attempt = attempt + 1
 
@@ -210,11 +217,9 @@ def ivr_llm():
             timeout=6,
             speech_timeout="auto"
         )
-        gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
+        gather.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
-
-
 
     # ==============================================================
     # 2. PIDIÓ HABLAR CON HUMANO
@@ -224,10 +229,8 @@ def ivr_llm():
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
-
-
     # ==============================================================
-    # 3. GPT — Responder consulta
+    # 3. GPT — Responder consulta normal
     # ==============================================================
     texto_usuario = speech or digits or ""
     logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
@@ -235,8 +238,6 @@ def ivr_llm():
     respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
-
-
 
     # ==============================================================
     # 4. FOLLOWUP – Preguntar si necesita algo más
@@ -251,14 +252,13 @@ def ivr_llm():
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. "
-        "Si no respondes, te lo volveré a preguntar.",
+        "Si no respondes, volveré a hablarte.",
         language="es-ES",
         voice="Polly.Lupe"
     )
     vr.append(gather2)
 
     return Response(str(vr), mimetype="text/xml")
-
 
 
 # =========================
@@ -269,7 +269,7 @@ def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
 
 
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
