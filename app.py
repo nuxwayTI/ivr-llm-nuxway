@@ -18,10 +18,12 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 session = requests.Session()  # menor latencia
 
 
+
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
+
 
 
 # =========================
@@ -54,6 +56,7 @@ Si NO lo dice:
 - No inventes información.
 - Haz 1 o 2 preguntas antes de responder casos técnicos.
 """
+
 
 
 # =========================
@@ -99,6 +102,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
 
+
 # =========================
 #  TRANSFERENCIA A AGENTE HUMANO
 # =========================
@@ -115,6 +119,7 @@ def transferir_a_agente(vr):
     return Response(str(vr), mimetype="text/xml")
 
 
+
 # =========================
 #  IVR PRINCIPAL
 # =========================
@@ -127,26 +132,9 @@ def ivr_llm():
     phase = request.args.get("phase", "initial")
     attempt = int(request.args.get("attempt", "1"))
 
-    # 👉 Nuevo: posible detección de máquina si Twilio manda AnsweredBy
-    answered_by = request.values.get("AnsweredBy")
-    logging.info(
-        f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} "
-        f"answered_by={answered_by} speech={speech} digits={digits}"
-    )
+    logging.info(f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} speech={speech} digits={digits}")
 
     vr = VoiceResponse()
-
-    # Si Twilio nos dice explícitamente que NO es humano
-    if answered_by and answered_by != "human":
-        # Aquí puedes afinar por tipo: machine_start, fax, etc.
-        vr.say(
-            "Detecté que no hay una persona en la línea. "
-            "Voy a finalizar esta llamada.",
-            language="es-ES",
-            voice="Polly.Lupe"
-        )
-        vr.hangup()
-        return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
     # 1. NO INPUT (Silencio)
@@ -165,6 +153,7 @@ def ivr_llm():
                 vr.hangup()
                 return Response(str(vr), mimetype="text/xml")
 
+            # mensaje según intento
             if attempt == 1:
                 mensaje = (
                     "No te escuché. ¿Puedo ayudarte en algo más? "
@@ -225,6 +214,8 @@ def ivr_llm():
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
+
+
     # ==============================================================
     # 2. PIDIÓ HABLAR CON HUMANO
     # ==============================================================
@@ -233,15 +224,19 @@ def ivr_llm():
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
+
+
     # ==============================================================
     # 3. GPT — Responder consulta
-    # ==================================================
+    # ==============================================================
     texto_usuario = speech or digits or ""
     logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
 
     respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
+
+
 
     # ==============================================================
     # 4. FOLLOWUP – Preguntar si necesita algo más
@@ -265,6 +260,7 @@ def ivr_llm():
     return Response(str(vr), mimetype="text/xml")
 
 
+
 # =========================
 #  HOME
 # =========================
@@ -273,8 +269,8 @@ def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
 
 
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
 
