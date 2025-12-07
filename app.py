@@ -250,8 +250,7 @@ def ivr_llm():
         speech_timeout="auto"
     )
     gather2.say(
-        "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. "
-        "Si no respondes, te lo volveré a preguntar.",
+        "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. ",
         language="es-ES",
         voice="Polly.Lupe"
     )
