@@ -3,7 +3,6 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import os
 import logging
 import requests
-import time
 from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO)
@@ -18,15 +17,17 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 session = requests.Session()  # menor latencia
 
+
+
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
-# NOTA: Esto guarda la conversación en memoria RAM del proceso.
-# Para producción serio conviene usar Redis o una base externa.
 conversaciones = defaultdict(list)
 
+
+
 # =========================
-# PROMPT DEL AGENTE IA (OPTIMIZADO)
+# PROMPT DEL AGENTE IA
 # =========================
 SYSTEM_PROMPT = """
 Eres el Agente de Inteligencia Artificial General de Nuxway Technology.
@@ -39,74 +40,27 @@ Cada vez que inicia una llamada:
 - Preséntate como agente IA de Nuxway Technology.
 - Da un mensaje breve, cálido y profesional de felicitación por las fiestas de fin de año.
 
-Ejemplo:
-"Hola, gracias por comunicarte con Nuxway Technology. Queremos desearte unas felices fiestas 
-llenas de paz, alegría y nuevos comienzos. ¡Un cálido saludo y nuestros mejores deseos!"
-
 ======================================================
 🧑‍💼 USO DEL NOMBRE Y EMPRESA
 ======================================================
 Si el usuario dice su nombre o empresa:
-- Responde usando ambos en la misma contestación.
-  Ejemplo: "Gracias Carlos de Nuxway, con gusto te ayudo..."
-
-Si NO lo dice o la respuesta es incompleta:
-- Pídele nuevamente: 
-  "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+- Respóndele usando ambos.
+Si NO lo dice:
+- Pídeselo nuevamente.
 
 ======================================================
-📏 REGLAS GENERALES
+📏 ESTILO
 ======================================================
-1. Antes de dar una solución, realiza 1 o 2 preguntas para entender mejor el caso.
-2. Si el caso es complejo o el cliente pide hablar con un humano:
-   - Sugiere amablemente derivarlo a un agente humano.
-3. No inventes información. Si algo no lo sabes:
-   - Di la verdad y ofrece escalar el caso.
-4. Responde siempre con frases cortas y claras (máx. 2–3 frases).
-5. Usa un tono profesional, amable y seguro.
-6. Explica de manera simple; entra en detalles técnicos solo si el cliente lo solicita.
-7. Siempre suena como un ingeniero de soporte real.
-
-======================================================
-🧠 MANEJO DE VARIAS PREGUNTAS A LA VEZ
-======================================================
-Si el usuario hace 2 o más preguntas simples en una sola frase:
-- Respóndelas TODAS, de forma breve y ordenada.
-- NO ignores ninguna.
-- Si necesitas entender algo antes de responder:
-  - Haz una sola pregunta aclaratoria y luego responde cada punto.
-
-Ejemplo:
-Usuario: "¿Cómo reinicio mi PBX y cuánto tarda?"
-Respuesta del agente:
-"Perfecto Carlos de Nuxway. Para ayudarte mejor, ¿tu PBX está en la nube o en sitio? 
-En general, el reinicio se hace desde el panel y suele tardar entre 1 y 3 minutos."
-
-======================================================
-🧮 CÁLCULOS Y RESPUESTAS CON NÚMEROS
-======================================================
-Si el usuario te pide operaciones numéricas simples (sumar, restar, multiplicar, dividir):
-- Calcula el resultado con precisión.
-- Responde de forma breve indicando el resultado explícito.
-
-Ejemplo:
-Usuario: "¿Cuánto es 35 + 7?"
-Agente: "35 más 7 es igual a 42."
-
-======================================================
-🎯 OBJETIVO SECUNDARIO: TEMAS QUE PUEDES ATENDER
-======================================================
-Puedes ayudar al cliente con temas de:
-- Comunicaciones unificadas
-- Telefonía IP y PBX IP
-- Contact center y call center
-- Redes IP, WiFi empresarial y VPN
-- Soluciones de Nuxway: Cloud PBX, NuxCaller y NuxGATE
+- Frases cortas y claras.
+- Tono profesional, amable y seguro.
+- No inventes información.
+- Haz 1 o 2 preguntas antes de responder casos técnicos.
 """
 
 
+
 # =========================
-#  GPT CALL (CON MEMORIA POR CallSid)
+#  GPT CALL
 # =========================
 def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     headers = {
@@ -114,7 +68,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
         "Content-Type": "application/json"
     }
 
-    historial = conversaciones[call_sid]  # lista de mensajes previos
+    historial = conversaciones[call_sid]
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -125,31 +79,32 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     data = {
         "model": "gpt-4.1-mini",
         "messages": messages,
-        "max_tokens": 120,      # un poco más largo para respuestas claras
+        "max_tokens": 120,
         "temperature": 0.2,
     }
 
     try:
         r = session.post(OPENAI_URL, json=data, headers=headers, timeout=8)
+
         if r.status_code != 200:
             logging.error(f"OPENAI ERROR: {r.status_code} {r.text}")
             return "Tengo problemas con la inteligencia artificial en este momento."
 
-        json_resp = r.json()
-        respuesta = json_resp["choices"][0]["message"]["content"]
+        respuesta = r.json()["choices"][0]["message"]["content"]
 
-        # Guardamos el turno en la memoria de la llamada
         conversaciones[call_sid].append({"role": "user", "content": prompt_usuario})
         conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
 
         return respuesta
+
     except Exception:
         logging.exception("GPT ERROR")
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
 
+
 # =========================
-#  TRANSFERENCIA
+#  TRANSFERENCIA A AGENTE HUMANO
 # =========================
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
@@ -162,6 +117,7 @@ def transferir_a_agente(vr):
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
+
 
 
 # =========================
@@ -185,17 +141,45 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # FOLLOWUP → colgar
+        # -------- FOLLOWUP (usuario en segunda ronda) ----------
         if phase == "followup":
-            vr.say(
-                "Gracias por comunicarse con Nuxway Technology. Hasta luego.",
+
+            if attempt >= 3:
+                vr.say(
+                    "No logré escucharte. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
+                    language="es-ES",
+                    voice="Polly.Lupe"
+                )
+                vr.hangup()
+                return Response(str(vr), mimetype="text/xml")
+
+            # mensaje según intento
+            if attempt == 1:
+                mensaje = (
+                    "No te escuché. ¿Puedo ayudarte en algo más? "
+                    "Si necesitas hablar con un humano, di 'humano' o marca cero."
+                )
+            else:
+                mensaje = (
+                    "Sigo sin escucharte. "
+                    "¿Puedo ayudarte en algo más? Di 'humano' si deseas que te transfiera."
+                )
+
+            next_attempt = attempt + 1
+
+            gather = Gather(
+                input="speech dtmf",
                 language="es-ES",
-                voice="Polly.Lupe"
+                action=f"/ivr-llm?phase=followup&attempt={next_attempt}",
+                method="POST",
+                timeout=7,
+                speech_timeout="auto"
             )
-            vr.hangup()
+            gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
+            vr.append(gather)
             return Response(str(vr), mimetype="text/xml")
 
-        # INITIAL → repetir 2 veces máximo
+        # -------- INICIO (pedir nombre/empresa) ----------
         if attempt >= 3:
             vr.say(
                 "No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
@@ -230,18 +214,21 @@ def ivr_llm():
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
+
+
     # ==============================================================
-    # 2. PIDIÓ HUMANO
+    # 2. PIDIÓ HABLAR CON HUMANO
     # ==============================================================
     text_lower = (speech or "").lower()
 
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
 
+
+
     # ==============================================================
-    # 3. GPT
+    # 3. GPT — Responder consulta
     # ==============================================================
-    # Usamos lo que haya: primero voz, si no hay, los dígitos
     texto_usuario = speech or digits or ""
     logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
 
@@ -249,26 +236,29 @@ def ivr_llm():
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
+
+
     # ==============================================================
-    # 4. FOLLOWUP – segunda ronda
+    # 4. FOLLOWUP – Preguntar si necesita algo más
     # ==============================================================
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
-        action="/ivr-llm?phase=followup",
+        action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=7,
         speech_timeout="auto"
     )
     gather2.say(
         "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. "
-        "Si no respondes, finalizaré la llamada.",
+        "Si no respondes, te lo volveré a preguntar.",
         language="es-ES",
         voice="Polly.Lupe"
     )
     vr.append(gather2)
 
     return Response(str(vr), mimetype="text/xml")
+
 
 
 # =========================
@@ -279,6 +269,7 @@ def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
 
 
+
 if __name__ == "__main__":
-    # En Render normalmente usas el puerto del entorno, pero para local está bien 5000
     app.run(host="0.0.0.0", port=5000, debug=True)
+
