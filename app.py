@@ -197,7 +197,7 @@ def ivr_llm():
         # -------- FOLLOWUP (usuario en segunda ronda) ----------
         if phase == "followup":
 
-            if attempt >= 3:
+            if attempt >= 4:
                 vr.say(
                     "No logré escucharte. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
                     language="es-ES",
