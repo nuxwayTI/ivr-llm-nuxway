@@ -226,8 +226,8 @@ def ivr_llm():
                 language="es-ES",
                 action=f"/ivr-llm?phase=followup&attempt={next_attempt}",
                 method="POST",
-                timeout=3,              # antes 7
-                speech_timeout="1",     # antes "auto"
+                timeout=3,              # ahorro
+                speech_timeout="1",     # ahorro
                 action_on_empty_result=True
             )
             gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -263,8 +263,8 @@ def ivr_llm():
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=3,              # antes 6
-            speech_timeout="1",     # antes "auto"
+            timeout=3,              # ahorro
+            speech_timeout="1",     # ahorro
             action_on_empty_result=True
         )
         gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -296,23 +296,19 @@ def ivr_llm():
 
 
     # ==============================================================
-    # 4. FOLLOWUP – Preguntar si necesita algo más
+    # 4. FOLLOWUP – Escuchar sin mensaje fijo extra
     # ==============================================================
-    # MODO AHORRO: timeouts más cortos
+    # MODO AHORRO + sin "¿Puedo ayudarte en algo más?" automático
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
-        timeout=3,              # antes 7
-        speech_timeout="1",     # antes "auto"
+        timeout=3,
+        speech_timeout="1",
         action_on_empty_result=True
     )
-    gather2.say(
-        "¿Puedo ayudarte en algo más? Si necesitas hablar con un humano, di 'humano' o marca cero. ",
-        language="es-ES",
-        voice="Polly.Lupe"
-    )
+    # Ya NO hacemos gather2.say(...); solo escuchamos para seguir la conversación
     vr.append(gather2)
 
     return Response(str(vr), mimetype="text/xml")
