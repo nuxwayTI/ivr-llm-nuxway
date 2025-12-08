@@ -220,13 +220,14 @@ def ivr_llm():
 
             next_attempt = attempt + 1
 
+            # MODO AHORRO: timeouts más cortos
             gather = Gather(
                 input="speech dtmf",
                 language="es-ES",
                 action=f"/ivr-llm?phase=followup&attempt={next_attempt}",
                 method="POST",
-                timeout=7,
-                speech_timeout="auto",
+                timeout=3,              # antes 7
+                speech_timeout="1",     # antes "auto"
                 action_on_empty_result=True
             )
             gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -256,13 +257,14 @@ def ivr_llm():
 
         next_attempt = attempt + 1
 
+        # MODO AHORRO: timeouts más cortos
         gather = Gather(
             input="speech dtmf",
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=6,
-            speech_timeout="auto",
+            timeout=3,              # antes 6
+            speech_timeout="1",     # antes "auto"
             action_on_empty_result=True
         )
         gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -296,13 +298,14 @@ def ivr_llm():
     # ==============================================================
     # 4. FOLLOWUP – Preguntar si necesita algo más
     # ==============================================================
+    # MODO AHORRO: timeouts más cortos
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
-        timeout=7,
-        speech_timeout="auto",
+        timeout=3,              # antes 7
+        speech_timeout="1",     # antes "auto"
         action_on_empty_result=True
     )
     gather2.say(
@@ -327,5 +330,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
 
