@@ -197,7 +197,8 @@ def ivr_llm():
         # -------- FOLLOWUP (usuario en segunda ronda) ----------
         if phase == "followup":
 
-            if attempt >= 4:
+            # ahora cortamos antes: máximo 1 "Sigo sin escucharte"
+            if attempt >= 3:
                 vr.say(
                     "No logré escucharte. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
                     language="es-ES",
@@ -212,7 +213,7 @@ def ivr_llm():
                     "No te escuché. ¿Puedo ayudarte en algo más? "
                     "Si necesitas hablar con un humano, di 'humano' o marca cero."
                 )
-            else:
+            else:  # attempt == 2
                 mensaje = (
                     "Sigo sin escucharte. "
                     "¿Puedo ayudarte en algo más? Di 'humano' si deseas que te transfiera."
@@ -226,8 +227,8 @@ def ivr_llm():
                 language="es-ES",
                 action=f"/ivr-llm?phase=followup&attempt={next_attempt}",
                 method="POST",
-                timeout=3,              # ahorro
-                speech_timeout="1",     # ahorro
+                timeout=3,
+                speech_timeout="1",
                 action_on_empty_result=True
             )
             gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -263,8 +264,8 @@ def ivr_llm():
             language="es-ES",
             action=f"/ivr-llm?phase=initial&attempt={next_attempt}",
             method="POST",
-            timeout=3,              # ahorro
-            speech_timeout="1",     # ahorro
+            timeout=3,
+            speech_timeout="1",
             action_on_empty_result=True
         )
         gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
@@ -274,12 +275,31 @@ def ivr_llm():
 
 
     # ==============================================================
-    # 2. PIDIÓ HABLAR CON HUMANO
+    # 2. INTENCIONES ESPECIALES: HUMANO O COLGAR
     # ==============================================================
     text_lower = (speech or "").lower()
 
+    # pedir hablar con humano
     if digits == "0" or "humano" in text_lower or "agente" in text_lower:
         return transferir_a_agente(vr)
+
+    # pedir colgar / no seguir ayudando
+    if (
+        "colgar" in text_lower
+        or "cuelga" in text_lower
+        or "cuelgue" in text_lower
+        or "no quiero que me ayudes con nada" in text_lower
+        or "no necesito ayuda" in text_lower
+        or "ya no quiero ayuda" in text_lower
+        or "nada más" in text_lower
+    ):
+        vr.say(
+            "Perfecto, cierro la atención. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+        vr.hangup()
+        return Response(str(vr), mimetype="text/xml")
 
 
 
@@ -308,7 +328,7 @@ def ivr_llm():
         speech_timeout="1",
         action_on_empty_result=True
     )
-    # Ya NO hacemos gather2.say(...); solo escuchamos para seguir la conversación
+    # No decimos nada, solo escuchamos para que el usuario siga hablando o pida humano/colgar
     vr.append(gather2)
 
     return Response(str(vr), mimetype="text/xml")
