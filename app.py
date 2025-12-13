@@ -214,8 +214,9 @@ def ivr_llm():
         # Aquí NO mandamos a GPT aunque haya dicho "hola".
         # Simplemente damos el mensaje inicial y pedimos nombre/empresa.
         mensaje = (
-            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
-            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+          "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology."
+          "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
+
         )
 
         gather = Gather(
