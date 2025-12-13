@@ -18,12 +18,10 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 session = requests.Session()  # menor latencia
 
 
-
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
-
 
 
 # =========================
@@ -109,9 +107,6 @@ Siempre mantén el foco en ayudar al usuario de forma clara, rápida y profesion
 """
 
 
-
-
-
 # =========================
 #  GPT CALL
 # =========================
@@ -155,7 +150,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
         return "Hubo un problema con la inteligencia artificial, intenta nuevamente."
 
 
-
 # =========================
 #  TRANSFERENCIA A AGENTE HUMANO
 # =========================
@@ -170,7 +164,6 @@ def transferir_a_agente(vr):
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
-
 
 
 # =========================
@@ -188,6 +181,55 @@ def ivr_llm():
     logging.info(f"[IVR] call_sid={call_sid} phase={phase} attempt={attempt} speech={speech} digits={digits}")
 
     vr = VoiceResponse()
+
+    # ==============================================================
+    # 0. WARMUP (ESCUCHAR ANTES DEL MENSAJE INICIAL)
+    #    - deja que el cliente diga "hola" sin cortarle el audio
+    #    - luego recién pides nombre/empresa
+    # ==============================================================
+    if phase == "warmup":
+        text_lower = (speech or "").lower()
+
+        # (mantener mismas intenciones incluso en warmup)
+        if digits == "0" or "humano" in text_lower or "agente" in text_lower or "ingeniero" in text_lower or "persona" in text_lower or "representante" in text_lower:
+            return transferir_a_agente(vr)
+
+        if (
+            "colgar" in text_lower
+            or "cuelga" in text_lower
+            or "cuelgue" in text_lower
+            or "no quiero que me ayudes con nada" in text_lower
+            or "no necesito ayuda" in text_lower
+            or "ya no quiero ayuda" in text_lower
+            or "nada más" in text_lower
+        ):
+            vr.say(
+                "Perfecto, cierro la atención. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
+                language="es-ES",
+                voice="Polly.Lupe"
+            )
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
+
+        # Aquí NO mandamos a GPT aunque haya dicho "hola".
+        # Simplemente damos el mensaje inicial y pedimos nombre/empresa.
+        mensaje = (
+            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
+            "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+        )
+
+        gather = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action="/ivr-llm?phase=initial&attempt=2",
+            method="POST",
+            timeout=3,
+            speech_timeout="1",
+            action_on_empty_result=True
+        )
+        gather.say(mensaje, language="es-ES", voice="Polly.Lupe")
+        vr.append(gather)
+        return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
     # 1. NO INPUT (Silencio)
@@ -235,7 +277,23 @@ def ivr_llm():
             vr.append(gather)
             return Response(str(vr), mimetype="text/xml")
 
-        # -------- INICIO (pedir nombre/empresa) ----------
+        # -------- INICIO (ANTES: pedir nombre/empresa) ----------
+        # NUEVO: en el primer intento, primero escuchamos un momento en silencio (warmup)
+        if attempt == 1:
+            gather_warmup = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=warmup&attempt=1",
+                method="POST",
+                timeout=2,            # 2s para que el cliente diga "hola"
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            # No decimos nada: solo escuchamos para no cortar al cliente
+            vr.append(gather_warmup)
+            return Response(str(vr), mimetype="text/xml")
+
+        # Si ya estamos en intentos posteriores, seguimos tu lógica normal
         if attempt >= 3:
             vr.say(
                 "No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
@@ -245,7 +303,7 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        if attempt == 1:
+        if attempt == 2:
             mensaje = (
                 "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
                 "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
@@ -272,15 +330,20 @@ def ivr_llm():
         vr.append(gather)
         return Response(str(vr), mimetype="text/xml")
 
-
-
     # ==============================================================
     # 2. INTENCIONES ESPECIALES: HUMANO O COLGAR
     # ==============================================================
     text_lower = (speech or "").lower()
 
-    # pedir hablar con humano
-    if digits == "0" or "humano" in text_lower or "agente" in text_lower:
+    # pedir hablar con humano (AMPLIADO)
+    if (
+        digits == "0"
+        or "humano" in text_lower
+        or "agente" in text_lower
+        or "ingeniero" in text_lower
+        or "persona" in text_lower
+        or "representante" in text_lower
+    ):
         return transferir_a_agente(vr)
 
     # pedir colgar / no seguir ayudando
@@ -301,8 +364,6 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-
-
     # ==============================================================
     # 3. GPT — Responder consulta
     # ==============================================================
@@ -312,8 +373,6 @@ def ivr_llm():
     respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
-
-
 
     # ==============================================================
     # 4. FOLLOWUP – Escuchar sin mensaje fijo extra
@@ -334,14 +393,12 @@ def ivr_llm():
     return Response(str(vr), mimetype="text/xml")
 
 
-
 # =========================
 #  HOME
 # =========================
 @app.route("/")
 def home():
     return "Nuxway IVR LLM – Soporte IA activo ✔"
-
 
 
 if __name__ == "__main__":
