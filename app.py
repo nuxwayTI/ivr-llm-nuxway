@@ -4,6 +4,7 @@ import os
 import logging
 import requests
 from collections import defaultdict
+import re
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,6 +23,9 @@ session = requests.Session()  # menor latencia
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
+
+# Para forzar el mensaje de fiestas SOLO una vez por llamada
+saludo_fiestas_enviado = defaultdict(bool)
 
 
 # =========================
@@ -166,6 +170,35 @@ def transferir_a_agente(vr):
 
 
 # =========================
+#  HEURÍSTICA: ¿parece que dio nombre/empresa?
+#  (para no disparar el saludo de fiestas con solo "hola")
+# =========================
+def parece_nombre_o_empresa(texto: str) -> bool:
+    t = (texto or "").strip().lower()
+    if not t:
+        return False
+
+    # saludos comunes: no cuentan como nombre/empresa
+    saludos = {
+        "hola", "buenas", "buenos dias", "buen día", "buen dia",
+        "buenas tardes", "buenas noches", "alo", "aló", "hello"
+    }
+    if t in saludos:
+        return False
+
+    # Si tiene "de <algo>" es típico: "Carlos de Pertec"
+    if re.search(r"\bde\b\s+\w+", t):
+        return True
+
+    # Si tiene 2+ palabras y no es solo relleno, suele ser nombre/empresa
+    palabras = re.findall(r"\w+", t)
+    if len(palabras) >= 2:
+        return True
+
+    return False
+
+
+# =========================
 #  IVR PRINCIPAL
 # =========================
 @app.route("/ivr-llm", methods=["POST"])
@@ -183,14 +216,19 @@ def ivr_llm():
 
     # ==============================================================
     # 0. WARMUP (ESCUCHAR ANTES DEL MENSAJE INICIAL)
-    #    - deja que el cliente diga "hola" sin cortarle el audio
-    #    - luego recién pides nombre/empresa
     # ==============================================================
     if phase == "warmup":
         text_lower = (speech or "").lower()
 
-        # (mantener mismas intenciones incluso en warmup)
-        if digits == "0" or "humano" in text_lower or "agente" in text_lower or "ingeniero" in text_lower or "persona" in text_lower or "representante" in text_lower:
+        # mismas intenciones incluso en warmup
+        if (
+            digits == "0"
+            or "humano" in text_lower
+            or "agente" in text_lower
+            or "ingeniero" in text_lower
+            or "persona" in text_lower
+            or "representante" in text_lower
+        ):
             return transferir_a_agente(vr)
 
         if (
@@ -210,12 +248,10 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Aquí NO mandamos a GPT aunque haya dicho "hola".
-        # Simplemente damos el mensaje inicial y pedimos nombre/empresa.
+        # No mandamos a GPT en warmup. Mensaje fijo para pedir nombre/empresa.
         mensaje = (
-         "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology"
-         "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
-
+            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
+            "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
         )
 
         gather = Gather(
@@ -236,10 +272,9 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # -------- FOLLOWUP (usuario en segunda ronda) ----------
+        # -------- FOLLOWUP ----------
         if phase == "followup":
 
-            # ahora cortamos antes: máximo 1 "Sigo sin escucharte"
             if attempt >= 3:
                 vr.say(
                     "No logré escucharte. Gracias por comunicarte con Nuxway Technology. Hasta luego.",
@@ -249,13 +284,12 @@ def ivr_llm():
                 vr.hangup()
                 return Response(str(vr), mimetype="text/xml")
 
-            # mensaje según intento
             if attempt == 1:
                 mensaje = (
                     "No te escuché. ¿Puedo ayudarte en algo más? "
                     "Si necesitas hablar con un humano, di 'humano' o marca cero."
                 )
-            else:  # attempt == 2
+            else:
                 mensaje = (
                     "Sigo sin escucharte. "
                     "¿Puedo ayudarte en algo más? Di 'humano' si deseas que te transfiera."
@@ -263,7 +297,6 @@ def ivr_llm():
 
             next_attempt = attempt + 1
 
-            # MODO AHORRO: timeouts más cortos
             gather = Gather(
                 input="speech dtmf",
                 language="es-ES",
@@ -277,23 +310,21 @@ def ivr_llm():
             vr.append(gather)
             return Response(str(vr), mimetype="text/xml")
 
-        # -------- INICIO (ANTES: pedir nombre/empresa) ----------
-        # NUEVO: en el primer intento, primero escuchamos un momento en silencio (warmup)
+        # -------- INICIO ----------
+        # Primer intento: warmup silencioso
         if attempt == 1:
             gather_warmup = Gather(
                 input="speech dtmf",
                 language="es-ES",
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
-                timeout=2,            # 2s para que el cliente diga "hola"
+                timeout=2,
                 speech_timeout="1",
                 action_on_empty_result=True
             )
-            # No decimos nada: solo escuchamos para no cortar al cliente
             vr.append(gather_warmup)
             return Response(str(vr), mimetype="text/xml")
 
-        # Si ya estamos en intentos posteriores, seguimos tu lógica normal
         if attempt >= 3:
             vr.say(
                 "No escuché ninguna respuesta. Gracias por su llamada. Hasta luego.",
@@ -305,8 +336,8 @@ def ivr_llm():
 
         if attempt == 2:
             mensaje = (
-          "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology"
-          "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
+                "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
+                "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
             )
         else:
             mensaje = (
@@ -316,7 +347,6 @@ def ivr_llm():
 
         next_attempt = attempt + 1
 
-        # MODO AHORRO: timeouts más cortos
         gather = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -335,7 +365,6 @@ def ivr_llm():
     # ==============================================================
     text_lower = (speech or "").lower()
 
-    # pedir hablar con humano (AMPLIADO)
     if (
         digits == "0"
         or "humano" in text_lower
@@ -346,7 +375,6 @@ def ivr_llm():
     ):
         return transferir_a_agente(vr)
 
-    # pedir colgar / no seguir ayudando
     if (
         "colgar" in text_lower
         or "cuelga" in text_lower
@@ -370,14 +398,28 @@ def ivr_llm():
     texto_usuario = speech or digits or ""
     logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
 
-    respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
+    # Forzar saludo cálido de fiestas SOLO cuando ya parece que dio nombre/empresa
+    if (not saludo_fiestas_enviado[call_sid]) and parece_nombre_o_empresa(texto_usuario):
+        prompt_forzado = (
+            "INICIO DE LLAMADA (SALUDO DE FIESTAS).\n"
+            f"El usuario dijo: '{texto_usuario}'.\n\n"
+            "Instrucciones obligatorias:\n"
+            "1) Usa el nombre y la empresa tal cual aparecen (si están).\n"
+            "2) Da un mensaje de felices fiestas cálido, profesional y un poco más completo (no genérico), "
+            "similar al ejemplo del prompt.\n"
+            "3) Termina con una sola pregunta: '¿En qué puedo ayudarte hoy?'\n"
+            "4) Máximo 2–3 frases.\n"
+        )
+        respuesta_gpt = llamar_gpt(call_sid, prompt_forzado)
+        saludo_fiestas_enviado[call_sid] = True
+    else:
+        respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
 
     # ==============================================================
     # 4. FOLLOWUP – Escuchar sin mensaje fijo extra
     # ==============================================================
-    # MODO AHORRO + sin "¿Puedo ayudarte en algo más?" automático
     gather2 = Gather(
         input="speech dtmf",
         language="es-ES",
@@ -387,7 +429,6 @@ def ivr_llm():
         speech_timeout="1",
         action_on_empty_result=True
     )
-    # No decimos nada, solo escuchamos para que el usuario siga hablando o pida humano/colgar
     vr.append(gather2)
 
     return Response(str(vr), mimetype="text/xml")
