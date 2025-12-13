@@ -73,7 +73,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     data = {
         "model": "gpt-4.1-mini",
         "messages": messages,
-        "max_tokens": 220,   # <-- CAMBIO: más espacio para un saludo cálido
+        "max_tokens": 220,
         "temperature": 0.2,
     }
 
@@ -96,7 +96,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
-    vr.say("Perfecto. Gracias por la conversación.Te voy a comunicar con un agente ingeniero. Por favor espera.",
+    vr.say("Te voy a comunicar con un agente humano. Por favor espera.",
            language="es-ES", voice="Polly.Lupe")
     d = vr.dial()
     d.sip(AGENT_SIP)
@@ -154,21 +154,26 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
+        # ✅ CAMBIO CLAVE: mantener el phase actual, no forzar warmup
         g = Gather(input="speech dtmf", language="es-ES",
-                   action=f"/ivr-llm?phase=warmup&attempt={attempt+1}",
+                   action=f"/ivr-llm?phase={phase}&attempt={attempt+1}",
                    timeout=2, speech_timeout="1",
                    action_on_empty_result=True)
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
-    texto = (speech or "").lower()
+    # Texto normalizado (incluye digits si quieres usarlo luego)
+    texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
     # ---------- HUMANO ----------
-    if digits == "0" or any(x in texto for x in ["humano", "ingeniero", "persona", "agente"]):
+    if digits == "0" or any(x in texto for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
         return transferir_a_agente(vr)
 
-    # ---------- COLGAR ----------
-    if any(x in texto for x in ["colgar", "nada más", "no quiero ayuda"]):
+    # ---------- COLGAR / FINALIZAR ----------
+    if any(x in texto for x in [
+        "colgar", "cuelga", "cuelgue", "cuelgan", "finalizar", "finaliza", "terminar", "termina",
+        "cortar", "corta", "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
+    ]):
         vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
