@@ -18,14 +18,12 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 session = requests.Session()
 
-
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
 saludo_fiestas_enviado = defaultdict(bool)
 hint_humano_enviado = defaultdict(bool)
-
 
 # =========================
 # PROMPT OPTIMIZADO
@@ -53,7 +51,6 @@ Derivación:
 - Redes IP, WiFi empresarial y VPN.
 - Soluciones Nuxway: Cloud PBX, NuxCaller y NuxGATE.
 """
-
 
 # =========================
 # GPT CALL
@@ -89,7 +86,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 
     return respuesta
 
-
 # =========================
 # TRANSFERENCIA HUMANO
 # =========================
@@ -102,22 +98,19 @@ def transferir_a_agente(vr):
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
 
-
 # =========================
 # UTILIDADES
 # =========================
 def parece_nombre_o_empresa(texto: str) -> bool:
     t = (texto or "").lower().strip()
-    if t in {"hola", "buenas", "buenos dias", "buen día", "buenas tardes"}:
+    if t in {"hola", "buenas", "buenos dias", "buen día", "buenas tardes", "buenas noches"}:
         return False
     if re.search(r"\bde\b\s+\w+", t):
         return True
     return len(t.split()) >= 2
 
-
 def despedida():
     return "Perfecto. Gracias por la conversación. Hasta luego."
-
 
 # =========================
 # IVR PRINCIPAL
@@ -132,37 +125,99 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # ---------- WARMUP ----------
+    # ---------- WARMUP (después del silencio inicial) ----------
     if phase == "warmup":
+        text_lower = (speech or "").lower()
+
+        # humano/colgar también aplica en warmup
+        if digits == "0" or any(x in text_lower for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
+            return transferir_a_agente(vr)
+
+        if any(x in text_lower for x in [
+            "colgar", "cuelga", "cuelgue", "finalizar", "terminar", "cortar",
+            "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
+        ]):
+            vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
+
         mensaje = (
             "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
             "Para comenzar y poder darte un mensaje adecuado, "
             "¿podrías decirme tu nombre y el de tu empresa, por favor?"
         )
-        g = Gather(input="speech dtmf", language="es-ES",
-                   action="/ivr-llm?phase=initial&attempt=2",
-                   timeout=3, speech_timeout="1",
-                   action_on_empty_result=True)
+        g = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action="/ivr-llm?phase=initial&attempt=2",
+            method="POST",
+            timeout=3,
+            speech_timeout="1",
+            action_on_empty_result=True
+        )
         g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
     # ---------- SILENCIO ----------
     if not speech and not digits:
+
+        # ✅ FIX: en INITIAL, el primer intento debe ir a warmup (para no cortar al que dice “hola”)
+        if phase == "initial" and attempt == 1:
+            g_warm = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=warmup&attempt=1",
+                method="POST",
+                timeout=2,
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            vr.append(g_warm)
+            return Response(str(vr), mimetype="text/xml")
+
+        # ✅ FIX: en INITIAL, si ya hubo intentos, SÍ pedir nombre/empresa (no silencio)
+        if phase == "initial" and attempt >= 2:
+            if attempt >= 3:
+                vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
+                vr.hangup()
+                return Response(str(vr), mimetype="text/xml")
+
+            mensaje = (
+                "No logré escucharte. "
+                "Por favor dime tu nombre y el de tu empresa."
+            )
+            g = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action=f"/ivr-llm?phase=initial&attempt={attempt+1}",
+                method="POST",
+                timeout=3,
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            g.say(mensaje, language="es-ES", voice="Polly.Lupe")
+            vr.append(g)
+            return Response(str(vr), mimetype="text/xml")
+
+        # FOLLOWUP: tu lógica normal de silencio
         if attempt >= 3:
             vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # ✅ CAMBIO CLAVE: mantener el phase actual, no forzar warmup
-        g = Gather(input="speech dtmf", language="es-ES",
-                   action=f"/ivr-llm?phase={phase}&attempt={attempt+1}",
-                   timeout=2, speech_timeout="1",
-                   action_on_empty_result=True)
+        g = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action=f"/ivr-llm?phase={phase}&attempt={attempt+1}",
+            method="POST",
+            timeout=2,
+            speech_timeout="1",
+            action_on_empty_result=True
+        )
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
-    # Texto normalizado (incluye digits si quieres usarlo luego)
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
     # ---------- HUMANO ----------
@@ -171,7 +226,7 @@ def ivr_llm():
 
     # ---------- COLGAR / FINALIZAR ----------
     if any(x in texto for x in [
-        "colgar", "cuelga", "cuelgue", "cuelgan", "finalizar", "finaliza", "terminar", "termina",
+        "colgar", "cuelga", "cuelgue", "finalizar", "finaliza", "terminar", "termina",
         "cortar", "corta", "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
     ]):
         vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
@@ -203,14 +258,18 @@ def ivr_llm():
                language="es-ES", voice="Polly.Lupe")
         hint_humano_enviado[call_sid] = True
 
-    g2 = Gather(input="speech dtmf", language="es-ES",
-                action="/ivr-llm?phase=followup&attempt=1",
-                timeout=3, speech_timeout="1",
-                action_on_empty_result=True)
+    g2 = Gather(
+        input="speech dtmf",
+        language="es-ES",
+        action="/ivr-llm?phase=followup&attempt=1",
+        method="POST",
+        timeout=3,
+        speech_timeout="1",
+        action_on_empty_result=True
+    )
     vr.append(g2)
 
     return Response(str(vr), mimetype="text/xml")
-
 
 # =========================
 # HOME
@@ -219,8 +278,5 @@ def ivr_llm():
 def home():
     return "Nuxway IVR LLM – OK"
 
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
