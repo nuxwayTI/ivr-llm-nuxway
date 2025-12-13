@@ -18,14 +18,12 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 session = requests.Session()
 
-
 # =========================
 # MEMORIA POR LLAMADA
 # =========================
 conversaciones = defaultdict(list)
 saludo_fiestas_enviado = defaultdict(bool)
 hint_humano_enviado = defaultdict(bool)
-
 
 # =========================
 # PROMPT OPTIMIZADO
@@ -53,7 +51,6 @@ Derivación:
 - Redes IP, WiFi empresarial y VPN.
 - Soluciones Nuxway: Cloud PBX, NuxCaller y NuxGATE.
 """
-
 
 # =========================
 # GPT CALL
@@ -89,7 +86,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 
     return respuesta
 
-
 # =========================
 # TRANSFERENCIA HUMANO
 # =========================
@@ -101,7 +97,6 @@ def transferir_a_agente(vr):
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
-
 
 # =========================
 # UTILIDADES
@@ -115,16 +110,13 @@ def parece_nombre_o_empresa(texto: str) -> bool:
         return True
     return len(t.split()) >= 2
 
-
 def despedida():
     return "Perfecto. Gracias por la conversación. Hasta luego."
-
 
 SALUDOS_SOLOS = {
     "hola", "buenas", "buenos dias", "buen día", "buen dia",
     "buenas tardes", "buenas noches", "alo", "aló", "hello"
 }
-
 
 # =========================
 # IVR PRINCIPAL
@@ -140,13 +132,12 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # 0) WARMUP: aquí SIEMPRE reproducimos el mensaje de nombre/empresa
-    #    (aunque el usuario haya estado en silencio)
+    # WARMUP: después de 2s de escuchar, damos el MENSAJE INICIAL
     # ==============================================================
     if phase == "warmup":
-        # Si el usuario dijo "humano/colgar" durante el warmup, respetarlo
         text_lower = ((speech or "") + " " + (digits or "")).strip().lower()
 
+        # humano/colgar también aplica en warmup
         if digits == "0" or any(x in text_lower for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
             return transferir_a_agente(vr)
 
@@ -158,7 +149,6 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # ✅ MENSAJE FIJO COMPLETO (y sin barge-in)
         mensaje = (
             "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
             "Para comenzar y poder darte un mensaje adecuado, "
@@ -173,40 +163,59 @@ def ivr_llm():
             timeout=3,
             speech_timeout="1",
             action_on_empty_result=True,
-            barge_in=False  # ✅ no permitir que corten el mensaje
+            barge_in=False  # mensaje completo
         )
         g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
-    # 1) SILENCIO
-    #    - Si es el primer turno (initial/attempt=1) => ir a warmup (2s)
-    #    - Si no => reintentar hasta 3 y colgar
+    # SILENCIO
     # ==============================================================
     if not speech and not digits:
 
-        # ✅ CLAVE: en el primer turno, NO cuelgues. Haz warmup silencioso y luego mensaje.
+        # 1) Si es el arranque real, primero warmup silencioso 2s
         if phase == "initial" and attempt == 1:
             g_warmup = Gather(
                 input="speech dtmf",
                 language="es-ES",
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
-                timeout=2,              # 2s para que el cliente diga "hola"
+                timeout=2,
                 speech_timeout="1",
                 action_on_empty_result=True
             )
-            # No decimos nada aquí: solo escuchamos para no cortar al cliente
             vr.append(g_warmup)
             return Response(str(vr), mimetype="text/xml")
 
-        # En cualquier otro caso, 3 intentos y colgar
+        # 2) Si ya dimos el mensaje inicial (attempt=2) y no respondió:
+        #    repetir UNA vez más (más corto)
+        if phase == "initial" and attempt == 2:
+            mensaje_rep = (
+                "No logré escucharte. Te lo repito una vez más. "
+                "Por favor dime tu nombre y el de tu empresa."
+            )
+            g_rep = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=initial&attempt=3",
+                method="POST",
+                timeout=3,
+                speech_timeout="1",
+                action_on_empty_result=True,
+                barge_in=False  # que se escuche completo
+            )
+            g_rep.say(mensaje_rep, language="es-ES", voice="Polly.Lupe")
+            vr.append(g_rep)
+            return Response(str(vr), mimetype="text/xml")
+
+        # 3) Si vuelve a estar en silencio (attempt>=3) -> despedir y colgar
         if attempt >= 3:
             vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
+        # Fallback de seguridad (si llega a otro phase)
         g = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -235,7 +244,7 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ Si el primer turno fue solo saludo ("hola"), pedir nombre/empresa (mensaje completo)
+    # ✅ Si el primer turno fue solo saludo, pedir nombre/empresa
     if phase == "initial" and attempt == 1 and texto.strip() in SALUDOS_SOLOS:
         mensaje = (
             "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
@@ -305,3 +314,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
