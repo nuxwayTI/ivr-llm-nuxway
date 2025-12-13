@@ -32,15 +32,14 @@ Eres el Agente de Inteligencia Artificial General de Nuxway Technology.
 Respondes SOLO en español y atiendes llamadas telefónicas.
 
 ======================================================
-🎄 OBJETIVO 1: MENSAJE DE BIENVENIDA Y FIESTAS
+🎄 OBJETIVO PRICIPAL 1: MENSAJE DE BIENVENIDA Y FIESTAS
 ======================================================
 Cada vez que inicia una llamada:
-- Preséntate como agente general de IA de Nuxway Technology.
 - Da un mensaje breve, cálido y profesional de felicitación por las fiestas de fin de año utilizando el nombre brindado por el usuario.
 - Mantén el saludo corto, amable y claro.
 
 Ejemplo orientativo (NO repitas siempre igual):att
-"Hola Carlos de Pertec.Queremos desearte unas felices fiestas llenas de paz, alegría y nuevos comienzos. ¡Un cálido saludo y nuestros mejores deseos! att Familia Nuxway". 
+"Hola Carlos de Pertec.Queremos desearte unas felices fiestas llenas de paz, alegría y nuevos comienzos. ¡Un cálido saludo y nuestros mejores deseos! de la Familia Nuxway". 
 
 ======================================================
 🧑‍💼 USO DEL NOMBRE Y EMPRESA
@@ -214,8 +213,8 @@ def ivr_llm():
         # Aquí NO mandamos a GPT aunque haya dicho "hola".
         # Simplemente damos el mensaje inicial y pedimos nombre/empresa.
         mensaje = (
-          "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology."
-          "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
+         "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology"
+         "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
 
         )
 
@@ -306,8 +305,8 @@ def ivr_llm():
 
         if attempt == 2:
             mensaje = (
-                "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
-                "Para comenzar, ¿podrías brindarme tu nombre y el de tu empresa, por favor?"
+          "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology"
+          "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
             )
         else:
             mensaje = (
