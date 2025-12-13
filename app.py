@@ -73,7 +73,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     data = {
         "model": "gpt-4.1-mini",
         "messages": messages,
-        "max_tokens": 140,
+        "max_tokens": 220,   # <-- CAMBIO: más espacio para un saludo cálido
         "temperature": 0.2,
     }
 
@@ -176,10 +176,15 @@ def ivr_llm():
     # ---------- GPT ----------
     if not saludo_fiestas_enviado[call_sid] and parece_nombre_o_empresa(texto):
         prompt = (
-            "INICIO DE LLAMADA.\n"
-            f"Usuario: '{texto}'.\n"
-            "Da un mensaje cálido de felices fiestas usando nombre/empresa "
-            "y luego pregunta: ¿En qué puedo ayudarte hoy?"
+            "INICIO DE LLAMADA (SALUDO NAVIDEÑO).\n"
+            f"El usuario dijo: '{texto}'.\n\n"
+            "Instrucciones obligatorias (sin copiar frases del usuario):\n"
+            "1) Si hay nombre y/o empresa, menciónalos.\n"
+            "2) Redacta un saludo cálido de Navidad y fin de año (no genérico), en 2–3 frases.\n"
+            "3) Debe incluir explícitamente: 'Navidad' y/o 'fin de año', y 'de parte de la Familia Nuxway Technology'.\n"
+            "4) Incluye buenos deseos para su equipo (ej. éxito, tranquilidad, crecimiento) con un toque humano.\n"
+            "5) Evita respuestas de una sola frase. Mínimo ~25 palabras.\n"
+            "6) Cierra con: '¿En qué puedo ayudarte hoy?'\n"
         )
         respuesta = llamar_gpt(call_sid, prompt)
         saludo_fiestas_enviado[call_sid] = True
@@ -212,6 +217,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
 
 
