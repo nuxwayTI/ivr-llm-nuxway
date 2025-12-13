@@ -139,8 +139,69 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # ---------- SILENCIO ----------
+    # ==============================================================
+    # 0) WARMUP: aquí SIEMPRE reproducimos el mensaje de nombre/empresa
+    #    (aunque el usuario haya estado en silencio)
+    # ==============================================================
+    if phase == "warmup":
+        # Si el usuario dijo "humano/colgar" durante el warmup, respetarlo
+        text_lower = ((speech or "") + " " + (digits or "")).strip().lower()
+
+        if digits == "0" or any(x in text_lower for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
+            return transferir_a_agente(vr)
+
+        if any(x in text_lower for x in [
+            "colgar", "cuelga", "cuelgue", "finalizar", "finaliza", "terminar", "termina",
+            "cortar", "corta", "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
+        ]):
+            vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
+
+        # ✅ MENSAJE FIJO COMPLETO (y sin barge-in)
+        mensaje = (
+            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
+            "Para comenzar y poder darte un mensaje adecuado, "
+            "¿podrías decirme tu nombre y el de tu empresa, por favor?"
+        )
+
+        g = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action="/ivr-llm?phase=initial&attempt=2",
+            method="POST",
+            timeout=3,
+            speech_timeout="1",
+            action_on_empty_result=True,
+            barge_in=False  # ✅ no permitir que corten el mensaje
+        )
+        g.say(mensaje, language="es-ES", voice="Polly.Lupe")
+        vr.append(g)
+        return Response(str(vr), mimetype="text/xml")
+
+    # ==============================================================
+    # 1) SILENCIO
+    #    - Si es el primer turno (initial/attempt=1) => ir a warmup (2s)
+    #    - Si no => reintentar hasta 3 y colgar
+    # ==============================================================
     if not speech and not digits:
+
+        # ✅ CLAVE: en el primer turno, NO cuelgues. Haz warmup silencioso y luego mensaje.
+        if phase == "initial" and attempt == 1:
+            g_warmup = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=warmup&attempt=1",
+                method="POST",
+                timeout=2,              # 2s para que el cliente diga "hola"
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            # No decimos nada aquí: solo escuchamos para no cortar al cliente
+            vr.append(g_warmup)
+            return Response(str(vr), mimetype="text/xml")
+
+        # En cualquier otro caso, 3 intentos y colgar
         if attempt >= 3:
             vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
             vr.hangup()
@@ -150,6 +211,7 @@ def ivr_llm():
             input="speech dtmf",
             language="es-ES",
             action=f"/ivr-llm?phase={phase}&attempt={attempt+1}",
+            method="POST",
             timeout=2,
             speech_timeout="1",
             action_on_empty_result=True
@@ -173,7 +235,7 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ Si es el primer turno y el usuario solo dijo un saludo, pedir nombre/empresa
+    # ✅ Si el primer turno fue solo saludo ("hola"), pedir nombre/empresa (mensaje completo)
     if phase == "initial" and attempt == 1 and texto.strip() in SALUDOS_SOLOS:
         mensaje = (
             "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
@@ -184,10 +246,11 @@ def ivr_llm():
             input="speech dtmf",
             language="es-ES",
             action="/ivr-llm?phase=initial&attempt=2",
+            method="POST",
             timeout=3,
             speech_timeout="1",
             action_on_empty_result=True,
-            barge_in=False  # ✅ CAMBIO: que el mensaje se diga completo sin interrupción
+            barge_in=False
         )
         g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
@@ -222,6 +285,7 @@ def ivr_llm():
         input="speech dtmf",
         language="es-ES",
         action="/ivr-llm?phase=followup&attempt=1",
+        method="POST",
         timeout=3,
         speech_timeout="1",
         action_on_empty_result=True
