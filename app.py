@@ -96,7 +96,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
-    vr.say("Te voy a comunicar con un agente humano. Por favor espera.",
+    vr.say("Perfecto. Gracias por la conversación.Te voy a comunicar con un agente ingeniero. Por favor espera.",
            language="es-ES", voice="Polly.Lupe")
     d = vr.dial()
     d.sip(AGENT_SIP)
@@ -116,7 +116,7 @@ def parece_nombre_o_empresa(texto: str) -> bool:
 
 
 def despedida():
-    return "Perfecto. Gracias por atender la llamada. Hasta luego."
+    return "Perfecto. Gracias por la conversación. Hasta luego."
 
 
 # =========================
