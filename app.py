@@ -27,6 +27,9 @@ conversaciones = defaultdict(list)
 # Para forzar el mensaje de fiestas SOLO una vez por llamada
 saludo_fiestas_enviado = defaultdict(bool)
 
+# Para decir el recordatorio de humano/ingeniero SOLO una vez por llamada
+hint_humano_enviado = defaultdict(bool)
+
 
 # =========================
 # PROMPT DEL AGENTE IA
@@ -171,14 +174,12 @@ def transferir_a_agente(vr):
 
 # =========================
 #  HEURÍSTICA: ¿parece que dio nombre/empresa?
-#  (para no disparar el saludo de fiestas con solo "hola")
 # =========================
 def parece_nombre_o_empresa(texto: str) -> bool:
     t = (texto or "").strip().lower()
     if not t:
         return False
 
-    # saludos comunes: no cuentan como nombre/empresa
     saludos = {
         "hola", "buenas", "buenos dias", "buen día", "buen dia",
         "buenas tardes", "buenas noches", "alo", "aló", "hello"
@@ -186,11 +187,9 @@ def parece_nombre_o_empresa(texto: str) -> bool:
     if t in saludos:
         return False
 
-    # Si tiene "de <algo>" es típico: "Carlos de Pertec"
     if re.search(r"\bde\b\s+\w+", t):
         return True
 
-    # Si tiene 2+ palabras y no es solo relleno, suele ser nombre/empresa
     palabras = re.findall(r"\w+", t)
     if len(palabras) >= 2:
         return True
@@ -220,7 +219,6 @@ def ivr_llm():
     if phase == "warmup":
         text_lower = (speech or "").lower()
 
-        # mismas intenciones incluso en warmup
         if (
             digits == "0"
             or "humano" in text_lower
@@ -248,7 +246,6 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # No mandamos a GPT en warmup. Mensaje fijo para pedir nombre/empresa.
         mensaje = (
             "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
             "Para comenzar y poder darte un mensaje adecuado, ¿podrías decirme tu nombre y el de tu empresa, por favor?"
@@ -272,7 +269,6 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # -------- FOLLOWUP ----------
         if phase == "followup":
 
             if attempt >= 3:
@@ -310,7 +306,6 @@ def ivr_llm():
             vr.append(gather)
             return Response(str(vr), mimetype="text/xml")
 
-        # -------- INICIO ----------
         # Primer intento: warmup silencioso
         if attempt == 1:
             gather_warmup = Gather(
@@ -398,7 +393,6 @@ def ivr_llm():
     texto_usuario = speech or digits or ""
     logging.info(f"[IVR] Texto para GPT: {texto_usuario}")
 
-    # Forzar saludo cálido de fiestas SOLO cuando ya parece que dio nombre/empresa
     if (not saludo_fiestas_enviado[call_sid]) and parece_nombre_o_empresa(texto_usuario):
         prompt_forzado = (
             "INICIO DE LLAMADA (SALUDO DE FIESTAS).\n"
@@ -416,6 +410,15 @@ def ivr_llm():
         respuesta_gpt = llamar_gpt(call_sid, texto_usuario)
 
     vr.say(respuesta_gpt, language="es-ES", voice="Polly.Lupe")
+
+    # ✅ Recordatorio de humano/ingeniero (solo 1 vez por llamada)
+    if not hint_humano_enviado[call_sid]:
+        vr.say(
+            "Si deseas hablar con un humano o un ingeniero, di 'humano' o marca cero.",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+        hint_humano_enviado[call_sid] = True
 
     # ==============================================================
     # 4. FOLLOWUP – Escuchar sin mensaje fijo extra
@@ -444,4 +447,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
