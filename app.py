@@ -165,7 +165,7 @@ def ivr_llm():
             action="/ivr-llm?phase=initial&attempt=2",
             method="POST",
             timeout=3,
-            speech_timeout="0.9",
+            speech_timeout="1",
             action_on_empty_result=True,
             barge_in=False
         )
@@ -185,7 +185,7 @@ def ivr_llm():
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
                 timeout=2,
-                speech_timeout="0.9",
+                speech_timeout="1",
                 action_on_empty_result=True
             )
             vr.append(g_warmup)
@@ -202,7 +202,7 @@ def ivr_llm():
                 action="/ivr-llm?phase=initial&attempt=3",
                 method="POST",
                 timeout=3,
-                speech_timeout="0.9",
+                speech_timeout="1",
                 action_on_empty_result=True,
                 barge_in=False
             )
@@ -221,7 +221,7 @@ def ivr_llm():
             action=f"/ivr-llm?phase={phase}&attempt={attempt+1}",
             method="POST",
             timeout=2,
-            speech_timeout="0.9",
+            speech_timeout="1",
             action_on_empty_result=True
         )
         vr.append(g)
@@ -268,7 +268,7 @@ def ivr_llm():
             action="/ivr-llm?phase=initial&attempt=2",
             method="POST",
             timeout=3,
-            speech_timeout="0.9",
+            speech_timeout="1",
             action_on_empty_result=True
         )
         vr.append(g_id)
@@ -308,7 +308,7 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="0.9",
+        speech_timeout="1",
         action_on_empty_result=True
     )
     vr.append(g2)
