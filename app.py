@@ -5,6 +5,8 @@ import logging
 import requests
 from collections import defaultdict
 import re
+import time
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +50,13 @@ Flujo:
 - Antes de dar soluciones técnicas, haz 1–2 preguntas.
 - Si el caso es complejo o el usuario lo solicita, sugiere transferir a un agente humano.
 """
+
+# =========================
+# LOG HELPER
+# =========================
+def log_event(call_sid: str, event: str, **kwargs):
+    extra = " ".join([f"{k}={repr(v)[:160]}" for k, v in kwargs.items()])
+    logging.info(f"[IVR] call_sid={call_sid} event={event} {extra}")
 
 # =========================
 # GPT CALL
@@ -129,11 +138,23 @@ BEEP_HINTS = {"beep", "bip", "tono", "tone"}
 # =========================
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
+    req_id = str(uuid.uuid4())[:8]
+
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
     call_sid = request.values.get("CallSid", "unknown")
     phase = request.args.get("phase", "initial")
     attempt = int(request.args.get("attempt", "1"))
+
+    log_event(
+        call_sid,
+        "request_in",
+        req_id=req_id,
+        phase=phase,
+        attempt=attempt,
+        speech=(speech or "")[:160],
+        digits=digits
+    )
 
     vr = VoiceResponse()
 
@@ -144,12 +165,14 @@ def ivr_llm():
         text_lower = ((speech or "") + " " + (digits or "")).strip().lower()
 
         if digits == "0" or any(x in text_lower for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
+            log_event(call_sid, "transfer_human", req_id=req_id, reason="warmup_keyword_or_digit", text=text_lower[:160])
             return transferir_a_agente(vr)
 
         if any(x in text_lower for x in [
             "colgar", "cuelga", "cuelgue", "finalizar", "finaliza", "terminar", "termina",
             "cortar", "corta", "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
         ]):
+            log_event(call_sid, "hangup", req_id=req_id, reason="warmup_user_hangup", text=text_lower[:160])
             vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
@@ -171,6 +194,8 @@ def ivr_llm():
         )
         g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
+
+        log_event(call_sid, "gather_out", req_id=req_id, phase="warmup", msg_preview=mensaje[:120])
         return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
@@ -189,6 +214,7 @@ def ivr_llm():
                 action_on_empty_result=True
             )
             vr.append(g_warmup)
+            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_1", next="warmup")
             return Response(str(vr), mimetype="text/xml")
 
         if phase == "initial" and attempt == 2:
@@ -208,10 +234,12 @@ def ivr_llm():
             )
             g_rep.say(mensaje_rep, language="es-ES", voice="Polly.Lupe")
             vr.append(g_rep)
+            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_2", msg_preview=mensaje_rep[:120])
             return Response(str(vr), mimetype="text/xml")
 
         # luego del segundo mensaje, si sigue silencio -> colgar
         if attempt >= 3:
+            log_event(call_sid, "hangup", req_id=req_id, reason="silence_after_repeat", attempt=attempt)
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
@@ -225,23 +253,28 @@ def ivr_llm():
             action_on_empty_result=True
         )
         vr.append(g)
+        log_event(call_sid, "silence_fallback", req_id=req_id, phase=phase, attempt=attempt)
         return Response(str(vr), mimetype="text/xml")
 
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
+    log_event(call_sid, "stt_text", req_id=req_id, len=len(texto), text_preview=texto[:160])
 
     # voicemail -> cuelga
     if any(h in texto for h in VOICEMAIL_HINTS):
+        log_event(call_sid, "hangup", req_id=req_id, reason="voicemail_detected", text_preview=texto[:160])
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
     # beep/tono -> solo después de haber repetido (attempt>=3)
     texto_min = re.sub(r"[^a-záéíóúñü]+", " ", texto).strip()
     if attempt >= 3 and ((texto_min in BEEP_HINTS) or (len(texto_min) <= 3)):
+        log_event(call_sid, "hangup", req_id=req_id, reason="beep_detected", texto_min=texto_min, attempt=attempt)
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
     # humano
     if digits == "0" or any(x in texto for x in ["humano", "ingeniero", "persona", "agente", "representante"]):
+        log_event(call_sid, "transfer_human", req_id=req_id, reason="keyword_or_digit", text_preview=texto[:160])
         return transferir_a_agente(vr)
 
     # colgar
@@ -249,19 +282,21 @@ def ivr_llm():
         "colgar", "cuelga", "cuelgue", "finalizar", "finaliza", "terminar", "termina",
         "cortar", "corta", "ya no quiero ayuda", "no quiero ayuda", "no necesito ayuda", "nada más", "nada mas"
     ]):
+        log_event(call_sid, "hangup", req_id=req_id, reason="user_hangup_keyword", text_preview=texto[:160])
         vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
     # identidad (sin GPT)
     if any(p in texto for p in PREGUNTAS_IDENTIDAD):
-        vr.say(
+        msg = (
             "Soy el asistente con inteligencia artificial de Nuxway Technology. "
             "Puedo ayudarte ahora mismo o, si prefieres, te paso con un agente humano. "
-            "¿Cómo te llamas y de qué empresa nos atiendes?",
-            language="es-ES",
-            voice="Polly.Lupe"
+            "¿Cómo te llamas y de qué empresa nos atiendes?"
         )
+        log_event(call_sid, "identity_reply", req_id=req_id, text_preview=texto[:160])
+
+        vr.say(msg, language="es-ES", voice="Polly.Lupe")
         g_id = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -290,17 +325,28 @@ def ivr_llm():
             "3) Debe decir: 'de parte de la Familia Nuxway Technology'.\n"
             "4) NO digas 'soy IA' a menos que te lo pregunten.\n"
         )
+
+        log_event(call_sid, "openai_request", req_id=req_id, kind="xmas", prompt_preview=prompt[:160])
+        t0 = time.time()
         respuesta = llamar_gpt(call_sid, prompt)
+        log_event(call_sid, "openai_response", req_id=req_id, seconds=round(time.time() - t0, 2),
+                  resp_preview=(respuesta or "")[:160])
+
         saludo_fiestas_enviado[call_sid] = True
     else:
+        log_event(call_sid, "openai_request", req_id=req_id, kind="normal", user_text=texto[:160])
+        t0 = time.time()
         respuesta = llamar_gpt(call_sid, texto)
+        log_event(call_sid, "openai_response", req_id=req_id, seconds=round(time.time() - t0, 2),
+                  resp_preview=(respuesta or "")[:160])
 
     vr.say(respuesta, language="es-ES", voice="Polly.Lupe")
 
     if not hint_humano_enviado[call_sid]:
-        vr.say("Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero.",
-               language="es-ES", voice="Polly.Lupe")
+        hint_msg = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
+        vr.say(hint_msg, language="es-ES", voice="Polly.Lupe")
         hint_humano_enviado[call_sid] = True
+        log_event(call_sid, "hint_human_once", req_id=req_id)
 
     g2 = Gather(
         input="speech dtmf",
@@ -313,6 +359,7 @@ def ivr_llm():
     )
     vr.append(g2)
 
+    log_event(call_sid, "gather_out", req_id=req_id, phase="followup", attempt=1)
     return Response(str(vr), mimetype="text/xml")
 
 
@@ -323,3 +370,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
