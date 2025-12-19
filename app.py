@@ -4,12 +4,11 @@ import os
 import logging
 import requests
 from collections import defaultdict
-import re
-import time
 import uuid
+import wave
+import io
 
 logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 
 # =========================
@@ -17,7 +16,6 @@ app = Flask(__name__)
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
-
 session = requests.Session()
 
 # =========================
@@ -50,13 +48,6 @@ Flujo:
 """
 
 # =========================
-# LOG HELPER
-# =========================
-def log_event(call_sid: str, event: str, **kwargs):
-    extra = " ".join([f"{k}={repr(v)[:160]}" for k, v in kwargs.items()])
-    logging.info(f"[IVR] call_sid={call_sid} event={event} {extra}")
-
-# =========================
 # GPT CALL
 # =========================
 def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
@@ -79,7 +70,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     }
 
     r = session.post(OPENAI_URL, json=data, headers=headers, timeout=8)
-
     if r.status_code != 200:
         return "Tengo problemas con la inteligencia artificial en este momento."
 
@@ -114,12 +104,32 @@ VOICEMAIL_HINTS = [
 ]
 
 # =========================
+# 1s de SILENCIO (WAV) - evita ringback
+# =========================
+@app.route("/silence.wav")
+def silence_wav():
+    # WAV PCM 8kHz mono 16-bit (compatible con telefonía)
+    duration_s = 1.0
+    framerate = 8000
+    nframes = int(duration_s * framerate)
+    sampwidth = 2  # 16-bit
+    nchannels = 1
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(nchannels)
+        wf.setsampwidth(sampwidth)
+        wf.setframerate(framerate)
+        wf.writeframes(b"\x00\x00" * nframes)  # silencio
+    wav_bytes = buf.getvalue()
+
+    return Response(wav_bytes, mimetype="audio/wav")
+
+# =========================
 # IVR PRINCIPAL
 # =========================
 @app.route("/ivr-llm", methods=["POST"])
 def ivr_llm():
-    req_id = str(uuid.uuid4())[:8]
-
     speech = request.values.get("SpeechResult")
     digits = request.values.get("Digits")
     call_sid = request.values.get("CallSid", "unknown")
@@ -129,7 +139,7 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # MENSAJE INICIAL DIRECTO (SIN WARMUP, IDEAL PARA CAMPAÑA)
+    # MENSAJE INICIAL: ESPERA 1s PERO SIN TONO (silencio real)
     # ==============================================================
     if phase == "initial" and attempt == 1 and not speech and not digits:
 
@@ -138,6 +148,11 @@ def ivr_llm():
             "para compartir un saludo de fin de año. "
             "Antes, ¿puedo saber con quién hablo?"
         )
+
+        # ✅ En vez de Pause, reproducimos 1s de audio silencioso
+        # IMPORTANTE: debe ser URL pública para Twilio (no localhost)
+        base_url = os.getenv("BASE_URL", "").rstrip("/")
+        vr.play(f"{base_url}/silence.wav")
 
         vr.say(mensaje, language="es-ES", voice="Polly.Lupe")
 
@@ -171,9 +186,7 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ==============================================================
     # GPT – saludo navideño una sola vez
-    # ==============================================================
     if not saludo_fiestas_enviado[call_sid]:
         prompt = (
             "INICIO DE LLAMADA.\n"
@@ -218,5 +231,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
