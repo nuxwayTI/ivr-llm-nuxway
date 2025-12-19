@@ -213,12 +213,12 @@ def ivr_llm():
                 language="es-ES",
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
-                timeout=1.5,  # ✅ antes era 2, ahora 1.5 para campaña GSM
+                timeout=1,  # ✅ antes era 2, ahora 1.5 para campaña GSM
                 speech_timeout="1",
                 action_on_empty_result=True
             )
             vr.append(g_warmup)
-            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_1", next="warmup", warmup_timeout=1.5)
+            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_1", next="warmup", warmup_timeout=1)
             return Response(str(vr), mimetype="text/xml")
 
         if phase == "initial" and attempt == 2:
