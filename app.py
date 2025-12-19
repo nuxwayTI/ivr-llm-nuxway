@@ -26,24 +26,28 @@ saludo_fiestas_enviado = defaultdict(bool)
 hint_humano_enviado = defaultdict(bool)
 
 # =========================
-# PROMPT OPTIMIZADO
+# PROMPT (OUTBOUND + MÁS HUMANO)
 # =========================
 SYSTEM_PROMPT = """
-Eres el Agente de Soporte con Inteligencia Artificial de Nuxway Technology.
-Atiendes llamadas telefónicas y respondes SOLO en español.
+Eres el asistente de soporte y atención de Nuxway Technology.
+Atiendes llamadas telefónicas en español con un tono humano, natural y profesional.
 
-Estilo:
-- Frases cortas y claras (2–3 frases).
-- Tono profesional, amable y seguro.
-- Lenguaje natural, como un ingeniero de soporte real.
+Reglas de estilo:
+- Sonido humano (no robótico).
+- Respuestas cortas (2–3 frases) y claras.
+- Evita repetir “soy IA” en cada respuesta.
 
-Comportamiento:
-- Antes de dar una solución, realiza 1 o 2 preguntas para entender el caso.
-- Si el usuario hace varias preguntas, respóndelas todas de forma breve y ordenada.
-- No inventes información. Si algo no lo sabes, dilo con honestidad.
+Identidad (IMPORTANTE):
+- Si el usuario pregunta “¿quién eres?”, “¿con quién hablo?”, “¿de dónde llamas?”:
+  responde claramente que eres el asistente con IA de Nuxway Technology y que puedes comunicar con un humano si lo desea.
+- Si NO lo preguntan, no insistas con “soy IA”; solo ayuda normal.
 
-Derivación:
-- Si el caso es complejo o el usuario lo solicita, sugiere comunicarlo con un agente humano.
+Flujo conversacional:
+- Primero saluda y pide el nombre (y si aplica, empresa).
+- Cuando tengas nombre/empresa, das un saludo cálido de Navidad/fin de año (2–3 frases)
+  “de parte de la Familia Nuxway Technology” y cierras con: “¿En qué puedo ayudarte hoy?”
+- Antes de dar soluciones técnicas, haz 1–2 preguntas para entender el caso.
+- Si el caso es complejo o el usuario lo solicita, sugiere transferir a un agente humano.
 
 Áreas:
 - Telefonía IP y PBX.
@@ -92,7 +96,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
-    vr.say("Te voy a comunicar con un agente humano. Por favor espera.",
+    vr.say("Te comunico con un agente humano. Por favor espera.",
            language="es-ES", voice="Polly.Lupe")
     d = vr.dial()
     d.sip(AGENT_SIP)
@@ -118,6 +122,12 @@ SALUDOS_SOLOS = {
     "buenas tardes", "buenas noches", "alo", "aló", "hello"
 }
 
+PREGUNTAS_IDENTIDAD = [
+    "quien eres", "quién eres", "con quien hablo", "con quién hablo",
+    "de donde llamas", "de dónde llamas", "de donde eres", "de dónde eres",
+    "que eres", "qué eres"
+]
+
 # =========================
 # IVR PRINCIPAL
 # =========================
@@ -132,7 +142,7 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # WARMUP: después de 2s de escuchar, damos el MENSAJE INICIAL
+    # WARMUP: escuchamos un poquito y luego damos el MENSAJE INICIAL
     # ==============================================================
     if phase == "warmup":
         text_lower = ((speech or "") + " " + (digits or "")).strip().lower()
@@ -149,10 +159,10 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
+        # ✅ Mensaje inicial más humano (outbound), sin insistir “soy IA”
         mensaje = (
-            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
-            "Para comenzar y poder darte un mensaje adecuado, "
-            "¿podrías decirme tu nombre y el de tu empresa, por favor?"
+            "Hola, ¿cómo estás? Te habla Nuxway Technology. "
+            "Para comenzar, ¿me podrías decir tu nombre y el de tu empresa, por favor?"
         )
 
         g = Gather(
@@ -163,7 +173,7 @@ def ivr_llm():
             timeout=3,
             speech_timeout="1",
             action_on_empty_result=True,
-            barge_in=False  # mensaje completo
+            barge_in=False
         )
         g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
@@ -174,26 +184,25 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # 1) Si es el arranque real, primero warmup silencioso 2s
+        # 1) arranque: warmup silencioso (más rápido: 1 segundo)
         if phase == "initial" and attempt == 1:
             g_warmup = Gather(
                 input="speech dtmf",
                 language="es-ES",
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
-                timeout=2,
+                timeout=1,              # ✅ antes era 2, ahora 1
                 speech_timeout="1",
                 action_on_empty_result=True
             )
             vr.append(g_warmup)
             return Response(str(vr), mimetype="text/xml")
 
-        # 2) Si ya dimos el mensaje inicial (attempt=2) y no respondió:
-        #    repetir UNA vez más (más corto)
+        # 2) repetir UNA vez más el pedido
         if phase == "initial" and attempt == 2:
             mensaje_rep = (
-                "No logré escucharte. Te lo repito una vez más. "
-                "Por favor dime tu nombre y el de tu empresa."
+                "No logré escucharte. Te lo repito una vez más: "
+                "¿me dices tu nombre y tu empresa, por favor?"
             )
             g_rep = Gather(
                 input="speech dtmf",
@@ -203,19 +212,18 @@ def ivr_llm():
                 timeout=3,
                 speech_timeout="1",
                 action_on_empty_result=True,
-                barge_in=False  # que se escuche completo
+                barge_in=False
             )
             g_rep.say(mensaje_rep, language="es-ES", voice="Polly.Lupe")
             vr.append(g_rep)
             return Response(str(vr), mimetype="text/xml")
 
-        # 3) Si vuelve a estar en silencio (attempt>=3) -> despedir y colgar
+        # 3) tercer silencio -> despedida
         if attempt >= 3:
             vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # Fallback de seguridad (si llega a otro phase)
         g = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -228,7 +236,7 @@ def ivr_llm():
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
-    # Texto normalizado (incluye digits)
+    # Texto normalizado
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
     # ---------- HUMANO ----------
@@ -244,12 +252,32 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
+    # ✅ Si preguntan identidad, responder fijo (sin GPT) y seguir escuchando
+    if any(p in texto for p in PREGUNTAS_IDENTIDAD):
+        vr.say(
+            "Soy el asistente con inteligencia artificial de Nuxway Technology. "
+            "Puedo ayudarte ahora mismo o, si prefieres, te paso con un agente humano. "
+            "¿Cómo te llamas y de qué empresa nos atiendes?",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+        g_id = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action="/ivr-llm?phase=initial&attempt=2",
+            method="POST",
+            timeout=3,
+            speech_timeout="1",
+            action_on_empty_result=True
+        )
+        vr.append(g_id)
+        return Response(str(vr), mimetype="text/xml")
+
     # ✅ Si el primer turno fue solo saludo, pedir nombre/empresa
     if phase == "initial" and attempt == 1 and texto.strip() in SALUDOS_SOLOS:
         mensaje = (
-            "Hola, soy el Agente con Inteligencia Artificial General de Nuxway Technology. "
-            "Para comenzar y poder darte un mensaje adecuado, "
-            "¿podrías decirme tu nombre y el de tu empresa, por favor?"
+            "Hola, ¿cómo estás? Te habla Nuxway Technology. "
+            "¿Me podrías decir tu nombre y tu empresa, por favor?"
         )
         g = Gather(
             input="speech dtmf",
@@ -270,13 +298,12 @@ def ivr_llm():
         prompt = (
             "INICIO DE LLAMADA (SALUDO NAVIDEÑO).\n"
             f"El usuario dijo: '{texto}'.\n\n"
-            "Instrucciones obligatorias (sin copiar frases del usuario):\n"
+            "Instrucciones obligatorias:\n"
             "1) Si hay nombre y/o empresa, menciónalos.\n"
-            "2) Redacta un saludo cálido de Navidad y fin de año (no genérico), en 2–3 frases.\n"
-            "3) Debe incluir explícitamente: 'Navidad' y/o 'fin de año', y 'de parte de la Familia Nuxway Technology'.\n"
-            "4) Incluye buenos deseos para su equipo (ej. éxito, tranquilidad, crecimiento) con un toque humano.\n"
-            "5) Evita respuestas de una sola frase. Mínimo ~25 palabras.\n"
-            "6) Cierra con: '¿En qué puedo ayudarte hoy?'\n"
+            "2) Saludo cálido de Navidad y fin de año (2–3 frases), humano, no genérico.\n"
+            "3) Debe decir: 'de parte de la Familia Nuxway Technology'.\n"
+            "4) Cierra con: '¿En qué puedo ayudarte hoy?'\n"
+            "5) NO repitas 'soy IA' a menos que te lo pregunten.\n"
         )
         respuesta = llamar_gpt(call_sid, prompt)
         saludo_fiestas_enviado[call_sid] = True
@@ -304,9 +331,6 @@ def ivr_llm():
     return Response(str(vr), mimetype="text/xml")
 
 
-# =========================
-# HOME
-# =========================
 @app.route("/")
 def home():
     return "Nuxway IVR LLM – OK"
