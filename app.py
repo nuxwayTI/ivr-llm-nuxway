@@ -159,7 +159,9 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # WARMUP: escuchar 2s y luego pedir nombre/empresa (mensaje corto)
+    # WARMUP: escuchar Xs y luego pedir nombre/empresa (mensaje corto)
+    #  CAMBIO IMPORTANTE: EL MENSAJE INICIAL SE DICE FUERA DEL GATHER
+    #  para que NO se interrumpa en campañas.
     # ==============================================================
     if phase == "warmup":
         text_lower = ((speech or "") + " " + (digits or "")).strip().lower()
@@ -182,6 +184,10 @@ def ivr_llm():
             "¿Me podrías decir tu nombre y tu empresa, por favor?"
         )
 
+        # ✅ Decir el mensaje COMPLETO (sin Gather) para que no se interrumpa
+        vr.say(mensaje, language="es-ES", voice="Polly.Lupe")
+
+        # ✅ Luego escuchar
         g = Gather(
             input="speech dtmf",
             language="es-ES",
@@ -189,13 +195,11 @@ def ivr_llm():
             method="POST",
             timeout=3,
             speech_timeout="1",
-            action_on_empty_result=True,
-            barge_in=False
+            action_on_empty_result=True
         )
-        g.say(mensaje, language="es-ES", voice="Polly.Lupe")
         vr.append(g)
 
-        log_event(call_sid, "gather_out", req_id=req_id, phase="warmup", msg_preview=mensaje[:120])
+        log_event(call_sid, "say_then_gather", req_id=req_id, phase="warmup", msg_preview=mensaje[:120])
         return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
@@ -209,12 +213,12 @@ def ivr_llm():
                 language="es-ES",
                 action="/ivr-llm?phase=warmup&attempt=1",
                 method="POST",
-                timeout=2,
+                timeout=1.5,  # ✅ antes era 2, ahora 1.5 para campaña GSM
                 speech_timeout="1",
                 action_on_empty_result=True
             )
             vr.append(g_warmup)
-            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_1", next="warmup")
+            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_1", next="warmup", warmup_timeout=1.5)
             return Response(str(vr), mimetype="text/xml")
 
         if phase == "initial" and attempt == 2:
@@ -222,6 +226,11 @@ def ivr_llm():
                 "No logré escucharte. Te lo repito una vez más: "
                 "¿me dices tu nombre y tu empresa, por favor?"
             )
+
+            # ✅ Decir el mensaje COMPLETO (sin Gather) para que no se interrumpa
+            vr.say(mensaje_rep, language="es-ES", voice="Polly.Lupe")
+
+            # ✅ Luego escuchar
             g_rep = Gather(
                 input="speech dtmf",
                 language="es-ES",
@@ -229,12 +238,11 @@ def ivr_llm():
                 method="POST",
                 timeout=3,
                 speech_timeout="1",
-                action_on_empty_result=True,
-                barge_in=False
+                action_on_empty_result=True
             )
-            g_rep.say(mensaje_rep, language="es-ES", voice="Polly.Lupe")
             vr.append(g_rep)
-            log_event(call_sid, "silence", req_id=req_id, where="initial_attempt_2", msg_preview=mensaje_rep[:120])
+
+            log_event(call_sid, "say_then_gather", req_id=req_id, phase="initial_attempt_2", msg_preview=mensaje_rep[:120])
             return Response(str(vr), mimetype="text/xml")
 
         # luego del segundo mensaje, si sigue silencio -> colgar
@@ -297,6 +305,7 @@ def ivr_llm():
         log_event(call_sid, "identity_reply", req_id=req_id, text_preview=texto[:160])
 
         vr.say(msg, language="es-ES", voice="Polly.Lupe")
+
         g_id = Gather(
             input="speech dtmf",
             language="es-ES",
