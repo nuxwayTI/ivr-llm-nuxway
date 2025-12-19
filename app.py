@@ -133,9 +133,6 @@ def ivr_llm():
     # ==============================================================
     if phase == "initial" and attempt == 1 and not speech and not digits:
 
-        # ✅ RETARDO MÁXIMO DE 1 SEGUNDO ANTES DE HABLAR
-        vr.pause(length=1)
-
         mensaje = (
             "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
             "para compartir un saludo de fin de año. "
@@ -221,4 +218,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
