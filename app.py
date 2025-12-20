@@ -84,12 +84,16 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
 
     r = session.post(OPENAI_URL, json=data, headers=headers, timeout=8)
     if r.status_code != 200:
+        logging.warning(f"[CALL {call_sid}] OpenAI error status={r.status_code} body={r.text[:300]}")
         return "Tengo problemas con la inteligencia artificial en este momento."
 
     respuesta = r.json()["choices"][0]["message"]["content"]
 
     conversaciones[call_sid].append({"role": "user", "content": prompt_usuario})
     conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
+
+    # ✅ NUEVO: log conversación (asistente)
+    logging.warning(f"[CALL {call_sid}] ASISTENTE: {respuesta}")
 
     return respuesta
 
@@ -167,6 +171,9 @@ def ivr_llm():
         base_url = os.getenv("BASE_URL", "").rstrip("/")
         vr.play(f"{base_url}/silence.wav")
 
+        # ✅ NUEVO: log conversación (asistente - mensaje inicial fijo)
+        logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
+
         vr.say(mensaje, language="es-ES", voice="Polly.Lupe")
 
         g = Gather(
@@ -184,6 +191,10 @@ def ivr_llm():
 
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
+    # ✅ NUEVO: log conversación (usuario)
+    if texto:
+        logging.warning(f"[CALL {call_sid}] USUARIO: {texto}")
+
     # ✅ NUEVO: capturar nombre si aún no existe
     if not nombre_por_llamada[call_sid]:
         patrones_nombre = [
@@ -195,19 +206,24 @@ def ivr_llm():
             m = re.search(pat, texto, flags=re.IGNORECASE)
             if m:
                 nombre_por_llamada[call_sid] = m.group(1).strip().title()
+                # ✅ NUEVO: log nombre detectado
+                logging.warning(f"[CALL {call_sid}] NOMBRE_DETECTADO: {nombre_por_llamada[call_sid]}")
                 break
 
     # voicemail → colgar
     if any(v in texto for v in VOICEMAIL_HINTS):
+        logging.warning(f"[CALL {call_sid}] EVENTO: voicemail_detectado -> hangup")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
     # humano
     if digits == "0" or "humano" in texto:
+        logging.warning(f"[CALL {call_sid}] EVENTO: transferencia_humano")
         return transferir_a_agente(vr)
 
     # colgar
     if "colgar" in texto or "nada más" in texto:
+        logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_hangup")
         vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
@@ -222,10 +238,17 @@ def ivr_llm():
         nombre = (nombre_por_llamada.get(call_sid, "") or "").strip()
         prefijo = f"Perfecto, {nombre}. " if nombre else "Perfecto. "
 
-        vr.say(
+        respuesta_contacto = (
             prefijo +
             "Nuestra página web oficial es nuxway punto net: nuxway punto net. "
-            "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero.",
+            "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero."
+        )
+
+        # ✅ NUEVO: log conversación (asistente - contacto)
+        logging.warning(f"[CALL {call_sid}] ASISTENTE (contacto): {respuesta_contacto}")
+
+        vr.say(
+            respuesta_contacto,
             language="es-ES",
             voice="Polly.Lupe"
         )
@@ -257,11 +280,17 @@ def ivr_llm():
     else:
         respuesta = llamar_gpt(call_sid, texto)
 
+    # (llamar_gpt ya hace log de la respuesta)
     vr.say(respuesta, language="es-ES", voice="Polly.Lupe")
 
     if not hint_humano_enviado[call_sid]:
+        hint = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
+
+        # ✅ NUEVO: log conversación (asistente - hint)
+        logging.warning(f"[CALL {call_sid}] ASISTENTE (hint): {hint}")
+
         vr.say(
-            "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero.",
+            hint,
             language="es-ES",
             voice="Polly.Lupe"
         )
