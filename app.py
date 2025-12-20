@@ -1,3 +1,4 @@
+```python
 from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import os
@@ -7,6 +8,7 @@ from collections import defaultdict
 import uuid
 import wave
 import io
+import re  # ✅ NUEVO
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -24,6 +26,7 @@ session = requests.Session()
 conversaciones = defaultdict(list)
 saludo_fiestas_enviado = defaultdict(bool)
 hint_humano_enviado = defaultdict(bool)
+nombre_por_llamada = defaultdict(str)  # ✅ NUEVO
 
 # =========================
 # PROMPT (MÁS HUMANO)
@@ -182,6 +185,19 @@ def ivr_llm():
 
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
+    # ✅ NUEVO: capturar nombre si aún no existe
+    if not nombre_por_llamada[call_sid]:
+        patrones_nombre = [
+            r"\bme llamo\s+([a-záéíóúñ]+)\b",
+            r"\bmi nombre es\s+([a-záéíóúñ]+)\b",
+            r"\bsoy\s+([a-záéíóúñ]+)\b",
+        ]
+        for pat in patrones_nombre:
+            m = re.search(pat, texto, flags=re.IGNORECASE)
+            if m:
+                nombre_por_llamada[call_sid] = m.group(1).strip().title()
+                break
+
     # voicemail → colgar
     if any(v in texto for v in VOICEMAIL_HINTS):
         vr.hangup()
@@ -197,14 +213,18 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ NUEVO: Respuesta fija SOLO para contacto/web (evita inventos)
+    # ✅ NUEVO: Respuesta fija SOLO para contacto/web (evita inventos) + usa el nombre
     contacto_keys = [
         "contacto", "contactar", "correo", "email", "e-mail", "mail",
         "telefono", "teléfono", "celular", "whatsapp", "wsp", "numero", "número",
         "pagina web", "página web", "sitio web", "web", "dominio", "url", "link"
     ]
     if any(k in texto for k in contacto_keys):
+        nombre = (nombre_por_llamada.get(call_sid, "") or "").strip()
+        prefijo = f"Perfecto, {nombre}. " if nombre else "Perfecto. "
+
         vr.say(
+            prefijo +
             "Nuestra página web oficial es nuxway punto net: nuxway punto net. "
             "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero.",
             language="es-ES",
@@ -269,7 +289,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
+```
 
 
