@@ -7,7 +7,7 @@ from collections import defaultdict
 import uuid
 import wave
 import io
-import re  # ✅ NUEVO
+import re
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -25,7 +25,7 @@ session = requests.Session()
 conversaciones = defaultdict(list)
 saludo_fiestas_enviado = defaultdict(bool)
 hint_humano_enviado = defaultdict(bool)
-nombre_por_llamada = defaultdict(str)  # ✅ NUEVO
+nombre_por_llamada = defaultdict(str)
 
 # =========================
 # PROMPT (MÁS HUMANO)
@@ -48,8 +48,7 @@ Flujo:
 - Da un saludo cálido de Navidad/fin de año “de parte de la Familia Nuxway Technology”.
 - Luego pregunta: “¿En qué puedo ayudarte hoy?”
 
-# ✅ NUEVO: Datos oficiales y anti-invención
-Datos oficiales (NO inventar):
+# Datos oficiales (NO inventar):
 - Sitio web oficial de Nuxway Technology: https://nuxway.net
 - Si el usuario pide la web o el dominio, responde exactamente: "nuxway punto net" (sin .com).
 - No inventes enlaces, correos, teléfonos, precios, fechas ni compromisos.
@@ -61,9 +60,9 @@ Manejo de dudas y preguntas difíciles:
 """
 
 # =========================
-# GPT CALL
+# GPT CALL (tokens dinámicos)
 # =========================
-def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
+def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str:
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
@@ -78,7 +77,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     data = {
         "model": "gpt-4.1-mini",
         "messages": messages,
-        "max_tokens": 220,
+        "max_tokens": max_tokens,   # ✅ ahora configurable
         "temperature": 0.2,
     }
 
@@ -92,7 +91,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str) -> str:
     conversaciones[call_sid].append({"role": "user", "content": prompt_usuario})
     conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
 
-    # ✅ NUEVO: log conversación (asistente)
     logging.warning(f"[CALL {call_sid}] ASISTENTE: {respuesta}")
 
     return respuesta
@@ -121,15 +119,14 @@ VOICEMAIL_HINTS = [
 ]
 
 # =========================
-# 0.5s de SILENCIO (WAV) - evita ringback y acelera inicio
+# 0.5s de SILENCIO (WAV)
 # =========================
 @app.route("/silence.wav")
 def silence_wav():
-    # WAV PCM 8kHz mono 16-bit (compatible con telefonía)
-    duration_s = 0.5  # ✅ MEJORA: antes 1.0
+    duration_s = 0.5
     framerate = 8000
     nframes = int(duration_s * framerate)
-    sampwidth = 2  # 16-bit
+    sampwidth = 2
     nchannels = 1
 
     buf = io.BytesIO()
@@ -137,7 +134,7 @@ def silence_wav():
         wf.setnchannels(nchannels)
         wf.setsampwidth(sampwidth)
         wf.setframerate(framerate)
-        wf.writeframes(b"\x00\x00" * nframes)  # silencio
+        wf.writeframes(b"\x00\x00" * nframes)
     wav_bytes = buf.getvalue()
 
     return Response(wav_bytes, mimetype="audio/wav")
@@ -166,12 +163,10 @@ def ivr_llm():
             "Antes, ¿puedo saber con quién hablo?"
         )
 
-        # ✅ En vez de Pause, reproducimos 0.5s de audio silencioso
-        # IMPORTANTE: debe ser URL pública para Twilio (no localhost)
         base_url = os.getenv("BASE_URL", "").rstrip("/")
-        vr.play(f"{base_url}/silence.wav")
+        if base_url:
+            vr.play(f"{base_url}/silence.wav")
 
-        # ✅ NUEVO: log conversación (asistente - mensaje inicial fijo)
         logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
 
         vr.say(mensaje, language="es-MX", voice="Polly.Mia")
@@ -182,7 +177,7 @@ def ivr_llm():
             action="/ivr-llm?phase=initial&attempt=2",
             method="POST",
             timeout=3,
-            speech_timeout="0",  # ✅ MEJORA: antes "1"
+            speech_timeout="1",  # ✅ vuelve de "0" a "1" (estable)
             action_on_empty_result=True
         )
         vr.append(g)
@@ -191,11 +186,11 @@ def ivr_llm():
 
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
-    # ✅ NUEVO: log conversación (usuario)
+    # log usuario
     if texto:
         logging.warning(f"[CALL {call_sid}] USUARIO: {texto}")
 
-    # ✅ NUEVO: capturar nombre si aún no existe
+    # capturar nombre
     if not nombre_por_llamada[call_sid]:
         patrones_nombre = [
             r"\bme llamo\s+([a-záéíóúñ]+)\b",
@@ -206,7 +201,6 @@ def ivr_llm():
             m = re.search(pat, texto, flags=re.IGNORECASE)
             if m:
                 nombre_por_llamada[call_sid] = m.group(1).strip().title()
-                # ✅ NUEVO: log nombre detectado
                 logging.warning(f"[CALL {call_sid}] NOMBRE_DETECTADO: {nombre_por_llamada[call_sid]}")
                 break
 
@@ -228,7 +222,7 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ NUEVO: Respuesta fija SOLO para contacto/web (evita inventos) + usa el nombre
+    # contacto/web fijo
     contacto_keys = [
         "contacto", "contactar", "correo", "email", "e-mail", "mail",
         "telefono", "teléfono", "celular", "whatsapp", "wsp", "numero", "número",
@@ -244,14 +238,9 @@ def ivr_llm():
             "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero."
         )
 
-        # ✅ NUEVO: log conversación (asistente - contacto)
         logging.warning(f"[CALL {call_sid}] ASISTENTE (contacto): {respuesta_contacto}")
 
-        vr.say(
-            respuesta_contacto,
-            language="es-MX",
-            voice="Polly.Mia"
-        )
+        vr.say(respuesta_contacto, language="es-MX", voice="Polly.Mia")
 
         g2 = Gather(
             input="speech dtmf",
@@ -259,14 +248,16 @@ def ivr_llm():
             action="/ivr-llm?phase=followup&attempt=1",
             method="POST",
             timeout=3,
-            speech_timeout="0",  # ✅ MEJORA: antes "1"
+            speech_timeout="1",  # ✅ vuelve de "0" a "1"
             action_on_empty_result=True
         )
         vr.append(g2)
 
         return Response(str(vr), mimetype="text/xml")
 
-    # GPT – saludo navideño una sola vez
+    # ==============================================================
+    # GPT – saludo navideño una sola vez (tokens bajos SOLO aquí)
+    # ==============================================================
     if not saludo_fiestas_enviado[call_sid]:
         prompt = (
             "INICIO DE LLAMADA.\n"
@@ -275,25 +266,17 @@ def ivr_llm():
             "de parte de la Familia Nuxway Technology, y luego pregunta: "
             "'¿En qué puedo ayudarte hoy?'"
         )
-        respuesta = llamar_gpt(call_sid, prompt)
+        respuesta = llamar_gpt(call_sid, prompt, max_tokens=100)  # ✅ SOLO primera respuesta
         saludo_fiestas_enviado[call_sid] = True
     else:
-        respuesta = llamar_gpt(call_sid, texto)
+        respuesta = llamar_gpt(call_sid, texto, max_tokens=220)   # ✅ resto normal
 
-    # (llamar_gpt ya hace log de la respuesta)
     vr.say(respuesta, language="es-MX", voice="Polly.Mia")
 
     if not hint_humano_enviado[call_sid]:
         hint = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
-
-        # ✅ NUEVO: log conversación (asistente - hint)
         logging.warning(f"[CALL {call_sid}] ASISTENTE (hint): {hint}")
-
-        vr.say(
-            hint,
-            language="es-MX",
-            voice="Polly.Mia"
-        )
+        vr.say(hint, language="es-MX", voice="Polly.Mia")
         hint_humano_enviado[call_sid] = True
 
     g2 = Gather(
@@ -302,7 +285,7 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="0",  # ✅ MEJORA: antes "1"
+        speech_timeout="1",  # ✅ vuelve de "0" a "1"
         action_on_empty_result=True
     )
     vr.append(g2)
@@ -317,4 +300,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
