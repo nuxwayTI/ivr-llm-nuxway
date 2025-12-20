@@ -121,12 +121,12 @@ VOICEMAIL_HINTS = [
 ]
 
 # =========================
-# 1s de SILENCIO (WAV) - evita ringback
+# 0.5s de SILENCIO (WAV) - evita ringback y acelera inicio
 # =========================
 @app.route("/silence.wav")
 def silence_wav():
     # WAV PCM 8kHz mono 16-bit (compatible con telefonía)
-    duration_s = 1.0
+    duration_s = 0.5  # ✅ MEJORA: antes 1.0
     framerate = 8000
     nframes = int(duration_s * framerate)
     sampwidth = 2  # 16-bit
@@ -156,7 +156,7 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # MENSAJE INICIAL: ESPERA 1s PERO SIN TONO (silencio real)
+    # MENSAJE INICIAL: ESPERA 0.5s PERO SIN TONO (silencio real)
     # ==============================================================
     if phase == "initial" and attempt == 1 and not speech and not digits:
 
@@ -166,7 +166,7 @@ def ivr_llm():
             "Antes, ¿puedo saber con quién hablo?"
         )
 
-        # ✅ En vez de Pause, reproducimos 1s de audio silencioso
+        # ✅ En vez de Pause, reproducimos 0.5s de audio silencioso
         # IMPORTANTE: debe ser URL pública para Twilio (no localhost)
         base_url = os.getenv("BASE_URL", "").rstrip("/")
         vr.play(f"{base_url}/silence.wav")
@@ -182,7 +182,7 @@ def ivr_llm():
             action="/ivr-llm?phase=initial&attempt=2",
             method="POST",
             timeout=3,
-            speech_timeout="1",
+            speech_timeout="0.5",  # ✅ MEJORA: antes "1"
             action_on_empty_result=True
         )
         vr.append(g)
@@ -259,7 +259,7 @@ def ivr_llm():
             action="/ivr-llm?phase=followup&attempt=1",
             method="POST",
             timeout=3,
-            speech_timeout="1",
+            speech_timeout="0.5",  # ✅ MEJORA: antes "1"
             action_on_empty_result=True
         )
         vr.append(g2)
@@ -302,7 +302,7 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="1",
+        speech_timeout="0.5",  # ✅ MEJORA: antes "1"
         action_on_empty_result=True
     )
     vr.append(g2)
