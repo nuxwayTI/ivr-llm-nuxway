@@ -45,6 +45,17 @@ Flujo:
 - Primero saluda y pide el nombre.
 - Da un saludo cálido de Navidad/fin de año “de parte de la Familia Nuxway Technology”.
 - Luego pregunta: “¿En qué puedo ayudarte hoy?”
+
+# ✅ NUEVO: Datos oficiales y anti-invención
+Datos oficiales (NO inventar):
+- Sitio web oficial de Nuxway Technology: https://nuxway.net
+- Si el usuario pide la web o el dominio, responde exactamente: "nuxway punto net" (sin .com).
+- No inventes enlaces, correos, teléfonos, precios, fechas ni compromisos.
+
+Manejo de dudas y preguntas difíciles:
+- Si no estás 100% seguro, NO inventes.
+- Responde breve: "Para darte una respuesta correcta, prefiero confirmarlo con un especialista."
+- Luego ofrece comunicar con un humano o ingeniero.
 """
 
 # =========================
@@ -186,6 +197,33 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
+    # ✅ NUEVO: Respuesta fija SOLO para contacto/web (evita inventos)
+    contacto_keys = [
+        "contacto", "contactar", "correo", "email", "e-mail", "mail",
+        "telefono", "teléfono", "celular", "whatsapp", "wsp", "numero", "número",
+        "pagina web", "página web", "sitio web", "web", "dominio", "url", "link"
+    ]
+    if any(k in texto for k in contacto_keys):
+        vr.say(
+            "Nuestra página web oficial es nuxway punto net: nuxway punto net. "
+            "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero.",
+            language="es-ES",
+            voice="Polly.Lupe"
+        )
+
+        g2 = Gather(
+            input="speech dtmf",
+            language="es-ES",
+            action="/ivr-llm?phase=followup&attempt=1",
+            method="POST",
+            timeout=3,
+            speech_timeout="1",
+            action_on_empty_result=True
+        )
+        vr.append(g2)
+
+        return Response(str(vr), mimetype="text/xml")
+
     # GPT – saludo navideño una sola vez
     if not saludo_fiestas_enviado[call_sid]:
         prompt = (
@@ -231,6 +269,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
