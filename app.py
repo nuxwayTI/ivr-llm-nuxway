@@ -182,7 +182,7 @@ def ivr_llm():
             action="/ivr-llm?phase=initial&attempt=2",
             method="POST",
             timeout=3,
-            speech_timeout="0,5",  # ✅ MEJORA: antes "1"
+            speech_timeout="0",  # ✅ MEJORA: antes "1"
             action_on_empty_result=True
         )
         vr.append(g)
@@ -259,7 +259,7 @@ def ivr_llm():
             action="/ivr-llm?phase=followup&attempt=1",
             method="POST",
             timeout=3,
-            speech_timeout="0,5",  # ✅ MEJORA: antes "1"
+            speech_timeout="0",  # ✅ MEJORA: antes "1"
             action_on_empty_result=True
         )
         vr.append(g2)
@@ -302,7 +302,7 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="0,5",  # ✅ MEJORA: antes "1"
+        speech_timeout="0",  # ✅ MEJORA: antes "1"
         action_on_empty_result=True
     )
     vr.append(g2)
