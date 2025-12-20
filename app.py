@@ -104,7 +104,7 @@ AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
     vr.say("Te comunico con un agente humano. Por favor espera.",
-           language="es-ES", voice="Polly.Lupe")
+           language="es-MX", voice="Polly.Mia")
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
@@ -174,7 +174,7 @@ def ivr_llm():
         # ✅ NUEVO: log conversación (asistente - mensaje inicial fijo)
         logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
 
-        vr.say(mensaje, language="es-ES", voice="Polly.Lupe")
+        vr.say(mensaje, language="es-MX", voice="Polly.Mia")
 
         g = Gather(
             input="speech dtmf",
@@ -224,7 +224,7 @@ def ivr_llm():
     # colgar
     if "colgar" in texto or "nada más" in texto:
         logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_hangup")
-        vr.say(despedida(), language="es-ES", voice="Polly.Lupe")
+        vr.say(despedida(), language="es-MX", voice="Polly.Mia")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
@@ -249,8 +249,8 @@ def ivr_llm():
 
         vr.say(
             respuesta_contacto,
-            language="es-ES",
-            voice="Polly.Lupe"
+            language="es-MX",
+            voice="Polly.Mia"
         )
 
         g2 = Gather(
@@ -281,7 +281,7 @@ def ivr_llm():
         respuesta = llamar_gpt(call_sid, texto)
 
     # (llamar_gpt ya hace log de la respuesta)
-    vr.say(respuesta, language="es-ES", voice="Polly.Lupe")
+    vr.say(respuesta, language="es-MX", voice="Polly.Mia")
 
     if not hint_humano_enviado[call_sid]:
         hint = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
@@ -291,8 +291,8 @@ def ivr_llm():
 
         vr.say(
             hint,
-            language="es-ES",
-            voice="Polly.Lupe"
+            language="es-MX",
+            voice="Polly.Mia"
         )
         hint_humano_enviado[call_sid] = True
 
@@ -317,6 +317,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
 
