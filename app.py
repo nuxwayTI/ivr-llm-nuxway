@@ -4,7 +4,6 @@ import os
 import logging
 import requests
 from collections import defaultdict
-import uuid
 import wave
 import io
 import re
@@ -40,7 +39,7 @@ Reglas de estilo:
 - Evita repetir “soy IA” si no te lo preguntan.
 
 Identidad:
-- Si el usuario pregunta “¿quién eres?”, “¿con quién hablo?”, “¿de dónde llamas?”:
+- Si el usuario pregunta “¿quién eres?”, “con quién hablo?”, “de dónde llamas?”:
   responde que eres el asistente con IA de Nuxway Technology y que puedes comunicar con un humano si lo desea.
 
 Flujo:
@@ -60,6 +59,14 @@ Manejo de dudas y preguntas difíciles:
 """
 
 # =========================
+# SAY helper (SSML: habla más lento)
+# =========================
+def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="90%"):
+    # SSML para bajar velocidad. Si prefieres más lento: 85% / 80%
+    ssml = f"<speak><prosody rate=\"{rate}\">{text}</prosody></speak>"
+    vr.say(ssml, language=language, voice=voice)
+
+# =========================
 # GPT CALL (tokens dinámicos)
 # =========================
 def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str:
@@ -77,7 +84,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
     data = {
         "model": "gpt-4.1-mini",
         "messages": messages,
-        "max_tokens": max_tokens,   # ✅ ahora configurable
+        "max_tokens": max_tokens,
         "temperature": 0.2,
     }
 
@@ -92,7 +99,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
     conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
 
     logging.warning(f"[CALL {call_sid}] ASISTENTE: {respuesta}")
-
     return respuesta
 
 # =========================
@@ -101,8 +107,7 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
-    vr.say("Te comunico con un agente humano. Por favor espera.",
-           language="es-MX", voice="Polly.Mia")
+    say_slow(vr, "Te comunico con un agente humano. Por favor espera.")
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
@@ -153,44 +158,103 @@ def ivr_llm():
     vr = VoiceResponse()
 
     # ==============================================================
-    # MENSAJE INICIAL: ESPERA 0.5s PERO SIN TONO (silencio real)
+    # ✅ MANEJO DE SILENCIO (EVITA BUCLES)
+    # - initial: mensaje inicial -> si silencio, repetir 1 vez -> si silencio otra vez, colgar
+    # - followup: si silencio, repetir 1 vez -> si silencio otra vez, colgar
     # ==============================================================
-    if phase == "initial" and attempt == 1 and not speech and not digits:
+    if not speech and not digits:
 
-        mensaje = (
-            "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
-            "para compartir un saludo de fin de año. "
-            "Antes, ¿Con quién hablo?"
-        )
+        # 1) PRIMER ARRANQUE: decir saludo inicial y escuchar
+        if phase == "initial" and attempt == 1:
+            mensaje = (
+                "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
+                "para compartir un saludo de fin de año. "
+                "Antes, ¿con quién hablo?"
+            )
 
-        base_url = os.getenv("BASE_URL", "").rstrip("/")
-        if base_url:
-            vr.play(f"{base_url}/silence.wav")
+            base_url = os.getenv("BASE_URL", "").rstrip("/")
+            if base_url:
+                vr.play(f"{base_url}/silence.wav")
 
-        logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
+            logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
+            say_slow(vr, mensaje)
 
-        vr.say(mensaje, language="es-MX", voice="Polly.Mia")
+            g = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=initial&attempt=2",
+                method="POST",
+                timeout=3,
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            vr.append(g)
+            return Response(str(vr), mimetype="text/xml")
 
-        g = Gather(
-            input="speech dtmf",
-            language="es-ES",
-            action="/ivr-llm?phase=initial&attempt=2",
-            method="POST",
-            timeout=3,
-            speech_timeout="1",  # ✅ vuelve de "0" a "1" (estable)
-            action_on_empty_result=True
-        )
-        vr.append(g)
+        # 2) SI NO RESPONDEN DESPUÉS DEL MENSAJE INICIAL: repetir 1 vez
+        if phase == "initial" and attempt == 2:
+            mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién hablo?"
+            logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
+            say_slow(vr, mensaje_rep)
 
+            g = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=initial&attempt=3",
+                method="POST",
+                timeout=3,
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            vr.append(g)
+            return Response(str(vr), mimetype="text/xml")
+
+        # 3) SI SIGUE SILENCIO: colgar (sin bucle)
+        if phase == "initial" and attempt >= 3:
+            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_initial -> hangup")
+            say_slow(vr, despedida())
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
+
+        # FOLLOWUP: repetir 1 vez y luego colgar
+        if phase == "followup" and attempt == 1:
+            msg = "No te escuché. Si sigues en línea, dime en qué te puedo ayudar."
+            logging.warning(f"[CALL {call_sid}] ASISTENTE (followup_rep1): {msg}")
+            say_slow(vr, msg)
+
+            g = Gather(
+                input="speech dtmf",
+                language="es-ES",
+                action="/ivr-llm?phase=followup&attempt=2",
+                method="POST",
+                timeout=3,
+                speech_timeout="1",
+                action_on_empty_result=True
+            )
+            vr.append(g)
+            return Response(str(vr), mimetype="text/xml")
+
+        if phase == "followup" and attempt >= 2:
+            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_followup -> hangup")
+            say_slow(vr, despedida())
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
+
+        # Fallback seguro: si llega acá por algún phase raro, cuelga
+        logging.warning(f"[CALL {call_sid}] EVENTO: silencio_fallback -> hangup phase={phase} attempt={attempt}")
+        say_slow(vr, despedida())
+        vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
+    # ==============================================================
+    # Ya hay texto del usuario
+    # ==============================================================
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
-    # log usuario
     if texto:
         logging.warning(f"[CALL {call_sid}] USUARIO: {texto}")
 
-    # capturar nombre
+    # Capturar nombre
     if not nombre_por_llamada[call_sid]:
         patrones_nombre = [
             r"\bme llamo\s+([a-záéíóúñ]+)\b",
@@ -218,7 +282,7 @@ def ivr_llm():
     # colgar
     if "colgar" in texto or "nada más" in texto:
         logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_hangup")
-        vr.say(despedida(), language="es-MX", voice="Polly.Mia")
+        say_slow(vr, despedida())
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
@@ -239,8 +303,7 @@ def ivr_llm():
         )
 
         logging.warning(f"[CALL {call_sid}] ASISTENTE (contacto): {respuesta_contacto}")
-
-        vr.say(respuesta_contacto, language="es-MX", voice="Polly.Mia")
+        say_slow(vr, respuesta_contacto)
 
         g2 = Gather(
             input="speech dtmf",
@@ -248,16 +311,13 @@ def ivr_llm():
             action="/ivr-llm?phase=followup&attempt=1",
             method="POST",
             timeout=3,
-            speech_timeout="1",  # ✅ vuelve de "0" a "1"
+            speech_timeout="1",
             action_on_empty_result=True
         )
         vr.append(g2)
-
         return Response(str(vr), mimetype="text/xml")
 
-    # ==============================================================
     # GPT – saludo navideño una sola vez (tokens bajos SOLO aquí)
-    # ==============================================================
     if not saludo_fiestas_enviado[call_sid]:
         prompt = (
             "INICIO DE LLAMADA.\n"
@@ -266,17 +326,17 @@ def ivr_llm():
             "de parte de la Familia Nuxway Technology, y luego pregunta: "
             "'¿En qué puedo ayudarte hoy?'"
         )
-        respuesta = llamar_gpt(call_sid, prompt, max_tokens=100)  # ✅ SOLO primera respuesta
+        respuesta = llamar_gpt(call_sid, prompt, max_tokens=100)
         saludo_fiestas_enviado[call_sid] = True
     else:
-        respuesta = llamar_gpt(call_sid, texto, max_tokens=220)   # ✅ resto normal
+        respuesta = llamar_gpt(call_sid, texto, max_tokens=220)
 
-    vr.say(respuesta, language="es-MX", voice="Polly.Mia")
+    say_slow(vr, respuesta)
 
     if not hint_humano_enviado[call_sid]:
         hint = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
         logging.warning(f"[CALL {call_sid}] ASISTENTE (hint): {hint}")
-        vr.say(hint, language="es-MX", voice="Polly.Mia")
+        say_slow(vr, hint)
         hint_humano_enviado[call_sid] = True
 
     g2 = Gather(
@@ -285,7 +345,7 @@ def ivr_llm():
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="1",  # ✅ vuelve de "0" a "1"
+        speech_timeout="1",
         action_on_empty_result=True
     )
     vr.append(g2)
@@ -300,5 +360,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
