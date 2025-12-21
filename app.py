@@ -1,3 +1,4 @@
+```python
 from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import os
@@ -59,11 +60,34 @@ Manejo de dudas y preguntas difíciles:
 """
 
 # =========================
-# SAY helper (SSML: habla más lento)
+# SAY helper (SSML: habla más lento) + ✅ PRO: énfasis en el saludo
 # =========================
-def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="90%"):
-    # SSML para bajar velocidad. Si prefieres más lento: 85% / 80%
-    ssml = f"<speak><prosody rate=\"{rate}\">{text}</prosody></speak>"
+def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="92%"):
+    """
+    Versión PRO:
+    - Si el texto empieza con "Hola" o "¡Hola!", le agrega énfasis al saludo para que no suene plano.
+    - Mantiene el resto del código igual.
+    """
+    t = (text or "").strip()
+
+    # Detecta saludo al inicio y lo mejora con SSML
+    if t.lower().startswith("hola"):
+        # Separa el "Hola" inicial (con o sin signos) del resto
+        m = re.match(r"^(¡?hola!?)(.*)$", t, flags=re.IGNORECASE)
+        if m:
+            hola = m.group(1)
+            resto = (m.group(2) or "").strip()
+            ssml = (
+                f"<speak><prosody rate=\"{rate}\">"
+                f"<emphasis level=\"moderate\">{hola}</emphasis>"
+                f"{(' ' + resto) if resto else ''}"
+                f"</prosody></speak>"
+            )
+            vr.say(ssml, language=language, voice=voice)
+            return
+
+    # Default
+    ssml = f"<speak><prosody rate=\"{rate}\">{t}</prosody></speak>"
     vr.say(ssml, language=language, voice=voice)
 
 # =========================
@@ -360,3 +384,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+```
+
