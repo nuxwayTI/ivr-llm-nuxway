@@ -349,7 +349,7 @@ def ivr_llm():
             "de parte de la Familia Nuxway Technology, y luego pregunta: "
             "'¿En qué puedo ayudarte hoy?'"
         )
-        respuesta = llamar_gpt(call_sid, prompt, max_tokens=100)
+        respuesta = llamar_gpt(call_sid, prompt, max_tokens=80)
         saludo_fiestas_enviado[call_sid] = True
     else:
         respuesta = llamar_gpt(call_sid, texto, max_tokens=220)
