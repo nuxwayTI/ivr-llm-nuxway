@@ -61,7 +61,7 @@ Manejo de dudas y preguntas difíciles:
 # =========================
 # SAY helper (SSML: habla más lento) + ✅ PRO: énfasis en el saludo
 # =========================
-def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="92%"):
+def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="95%"):
     """
     Versión PRO:
     - Si el texto empieza con "Hola" o "¡Hola!", le agrega énfasis al saludo para que no suene plano.
