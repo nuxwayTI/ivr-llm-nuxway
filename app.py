@@ -160,7 +160,7 @@ def ivr_llm():
         mensaje = (
             "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
             "para compartir un saludo de fin de año. "
-            "Antes, ¿puedo saber con quién hablo?"
+            "Antes, ¿Con quién hablo?"
         )
 
         base_url = os.getenv("BASE_URL", "").rstrip("/")
