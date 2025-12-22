@@ -64,7 +64,7 @@ Flujo:
 Manejo de dudas y preguntas difíciles:
 - Si no estás 100% seguro, NO inventes.
 - Responde breve: "Para darte una respuesta correcta, prefiero confirmarlo con un especialista."
-- Luego ofrece comunicar con un humano o ingeniero.
+- Luego ofrece comunicar con un ingeniero.
 
 # Servicios oficiales de Nuxway Technology (NO inventar):
 - Si el usuario pregunta por “servicios”, “qué hacen”, “a qué se dedican”, “qué ofrecen”, “soluciones”, “productos”, “áreas”, “portafolio”:
@@ -91,14 +91,12 @@ Nuestros servicios:
 def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="98%"):
     """
     Mejora de naturalidad:
-    - Rate por defecto 98% (pedido).
+    - Rate por defecto 98%.
     - Pausas cortas por puntuación para sonar humano.
     - Si empieza con "Hola", enfatiza solo el saludo.
     """
     t = (text or "").strip()
 
-    # Micro-pausas para voz (sin cambiar contenido)
-    # Ojo: no tocamos preguntas ni lógica, solo SSML.
     def add_breaks(s: str) -> str:
         s = re.sub(r"\.\s+", ".<break time=\"180ms\"/> ", s)
         s = re.sub(r"\?\s+", "?<break time=\"220ms\"/> ", s)
@@ -108,7 +106,6 @@ def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", 
 
     t_ssml = add_breaks(t)
 
-    # Detecta saludo al inicio y lo mejora con SSML
     if t.lower().startswith("hola"):
         m = re.match(r"^(¡?hola!?)(.*)$", t, flags=re.IGNORECASE)
         if m:
@@ -145,7 +142,6 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
         "model": "gpt-4.1-mini",
         "messages": messages,
         "max_tokens": max_tokens,
-        # Un poco más humano (menos rígido) sin volverse loco
         "temperature": 0.35,
     }
 
@@ -163,12 +159,12 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
     return respuesta
 
 # =========================
-# TRANSFERENCIA HUMANO
+# TRANSFERENCIA INGENIERO
 # =========================
 AGENT_SIP = "sip:6049@nuxway.sip.twilio.com"
 
 def transferir_a_agente(vr):
-    say_slow(vr, "Te comunico con un agente humano. Por favor espera.")
+    say_slow(vr, "Te comunico con un ingeniero. Por favor espera.")
     d = vr.dial()
     d.sip(AGENT_SIP)
     return Response(str(vr), mimetype="text/xml")
@@ -179,16 +175,9 @@ def transferir_a_agente(vr):
 def despedida():
     return "Perfecto. Gracias por la conversación. Hasta luego."
 
-# ✅ despedida con escucha (barge-in) para no perder segundos valiosos
 def despedida_con_escucha(vr: VoiceResponse, action_url: str):
-    """
-    Dice la despedida pero permite que el usuario interrumpa hablando o marcando teclas.
-    Si el usuario habla/teclea, Twilio enviará SpeechResult/Digits al action_url.
-    Si no habla, action_on_empty_result=True enviará vacío y ahí se cuelga.
-    """
     g = Gather(
         input="speech dtmf",
-        # Unificamos idioma con el TTS para LatAm (evita sensación rara y mejora STT)
         language="es-MX",
         action=action_url,
         method="POST",
@@ -239,21 +228,13 @@ def ivr_llm():
 
     vr = VoiceResponse()
 
-    # ==============================================================
-    # ✅ MANEJO DE SILENCIO (EVITA BUCLES)
-    # - initial: mensaje inicial -> si silencio, repetir 1 vez -> si silencio otra vez, colgar
-    # - followup: si silencio, repetir 1 vez -> si silencio otra vez, colgar
-    # - goodbye: despedida con escucha -> si no hablan, colgar
-    # ==============================================================
     if not speech and not digits:
 
-        # ✅ si ya dimos despedida con escucha y siguió silencio -> colgar
         if phase == "goodbye" and attempt >= 2:
             logging.warning(f"[CALL {call_sid}] EVENTO: goodbye_silencio -> hangup")
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # 1) PRIMER ARRANQUE: decir saludo inicial y escuchar
         if phase == "initial" and attempt == 1:
             mensaje = (
                 "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
@@ -270,7 +251,6 @@ def ivr_llm():
 
             g = Gather(
                 input="speech dtmf",
-                # ✅ Unificado con TTS para LatAm
                 language="es-MX",
                 action="/ivr-llm?phase=initial&attempt=2",
                 method="POST",
@@ -281,7 +261,6 @@ def ivr_llm():
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
-        # 2) SI NO RESPONDEN DESPUÉS DEL MENSAJE INICIAL: repetir 1 vez
         if phase == "initial" and attempt == 2:
             mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto?"
             logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
@@ -299,13 +278,11 @@ def ivr_llm():
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
-        # 3) SI SIGUE SILENCIO: despedida con escucha (en vez de colgar directo)
         if phase == "initial" and attempt >= 3:
             logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_initial -> goodbye_con_escucha")
             despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
             return Response(str(vr), mimetype="text/xml")
 
-        # FOLLOWUP: repetir 1 vez y luego colgar
         if phase == "followup" and attempt == 1:
             msg = "No te escuché. Si sigues en línea, dime en qué te puedo ayudar."
             logging.warning(f"[CALL {call_sid}] ASISTENTE (followup_rep1): {msg}")
@@ -328,20 +305,15 @@ def ivr_llm():
             despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
             return Response(str(vr), mimetype="text/xml")
 
-        # Fallback seguro: si llega acá por algún phase raro, cuelga
         logging.warning(f"[CALL {call_sid}] EVENTO: silencio_fallback -> goodbye_con_escucha phase={phase} attempt={attempt}")
         despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
         return Response(str(vr), mimetype="text/xml")
 
-    # ==============================================================
-    # Ya hay texto del usuario
-    # ==============================================================
     texto = ((speech or "") + " " + (digits or "")).strip().lower()
 
     if texto:
         logging.warning(f"[CALL {call_sid}] USUARIO: {texto}")
 
-    # Capturar nombre
     if not nombre_por_llamada[call_sid]:
         patrones_nombre = [
             r"\bme llamo\s+([a-záéíóúñ]+)\b",
@@ -355,24 +327,21 @@ def ivr_llm():
                 logging.warning(f"[CALL {call_sid}] NOMBRE_DETECTADO: {nombre_por_llamada[call_sid]}")
                 break
 
-    # voicemail → colgar
     if any(v in texto for v in VOICEMAIL_HINTS):
         logging.warning(f"[CALL {call_sid}] EVENTO: voicemail_detectado -> hangup")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # humano
-    if digits == "0" or "humano" in texto:
-        logging.warning(f"[CALL {call_sid}] EVENTO: transferencia_humano")
+    # ✅ SOLO "ingeniero" o marcar 0 transfieren (ya NO detecta "humano")
+    if digits == "0" or "ingeniero" in texto:
+        logging.warning(f"[CALL {call_sid}] EVENTO: transferencia_ingeniero")
         return transferir_a_agente(vr)
 
-    # colgar
     if "colgar" in texto or "nada más" in texto:
         logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_goodbye_con_escucha")
         despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
         return Response(str(vr), mimetype="text/xml")
 
-    # contacto/web fijo
     contacto_keys = [
         "contacto", "contactar", "correo", "email", "e-mail", "mail",
         "telefono", "teléfono", "celular", "whatsapp", "wsp", "numero", "número",
@@ -385,7 +354,7 @@ def ivr_llm():
         respuesta_contacto = (
             prefijo +
             "Nuestra página web oficial es nuxway punto net: nuxway punto net. "
-            "Si deseas, también puedo comunicarte con un humano o ingeniero; di 'humano' o marca cero."
+            "Si deseas, también puedo comunicarte con un ingeniero; di 'ingeniero' o marca cero."
         )
 
         logging.warning(f"[CALL {call_sid}] ASISTENTE (contacto): {respuesta_contacto}")
@@ -403,7 +372,6 @@ def ivr_llm():
         vr.append(g2)
         return Response(str(vr), mimetype="text/xml")
 
-    # GPT – saludo navideño una sola vez (tokens bajos SOLO aquí)
     if not saludo_fiestas_enviado[call_sid]:
         prompt = (
             "INICIO DE LLAMADA.\n"
@@ -420,7 +388,7 @@ def ivr_llm():
     say_slow(vr, respuesta)
 
     if not hint_humano_enviado[call_sid]:
-        hint = "Si deseas hablar con un humano o ingeniero, di 'humano' o marca cero."
+        hint = "Si deseas hablar con un ingeniero, di 'ingeniero' o marca cero."
         logging.warning(f"[CALL {call_sid}] ASISTENTE (hint): {hint}")
         say_slow(vr, hint)
         hint_humano_enviado[call_sid] = True
