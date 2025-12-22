@@ -159,6 +159,27 @@ def transferir_a_agente(vr):
 def despedida():
     return "Perfecto. Gracias por la conversación. Hasta luego."
 
+# ✅ NUEVO: despedida con escucha (barge-in) para no perder segundos valiosos
+def despedida_con_escucha(vr: VoiceResponse, action_url: str):
+    """
+    Dice la despedida pero permite que el usuario interrumpa hablando o marcando teclas.
+    Si el usuario habla/teclea, Twilio enviará SpeechResult/Digits al action_url.
+    Si no habla, action_on_empty_result=True enviará vacío y ahí se cuelga.
+    """
+    g = Gather(
+        input="speech dtmf",
+        language="es-ES",
+        action=action_url,
+        method="POST",
+        timeout=2,
+        speech_timeout="1",
+        bargeIn=True,
+        action_on_empty_result=True
+    )
+    # Importante: decir dentro del Gather, no directo en vr
+    say_slow(g, despedida())
+    vr.append(g)
+
 VOICEMAIL_HINTS = [
     "buzón de voz", "buzon de voz", "deje su mensaje", "después del tono",
     "no está disponible", "grabe su mensaje", "leave a message", "after the tone"
@@ -202,8 +223,15 @@ def ivr_llm():
     # ✅ MANEJO DE SILENCIO (EVITA BUCLES)
     # - initial: mensaje inicial -> si silencio, repetir 1 vez -> si silencio otra vez, colgar
     # - followup: si silencio, repetir 1 vez -> si silencio otra vez, colgar
+    # - goodbye: despedida con escucha -> si no hablan, colgar
     # ==============================================================
     if not speech and not digits:
+
+        # ✅ NUEVO: si ya dimos despedida con escucha y siguió silencio -> colgar
+        if phase == "goodbye" and attempt >= 2:
+            logging.warning(f"[CALL {call_sid}] EVENTO: goodbye_silencio -> hangup")
+            vr.hangup()
+            return Response(str(vr), mimetype="text/xml")
 
         # 1) PRIMER ARRANQUE: decir saludo inicial y escuchar
         if phase == "initial" and attempt == 1:
@@ -250,11 +278,10 @@ def ivr_llm():
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
-        # 3) SI SIGUE SILENCIO: colgar (sin bucle)
+        # 3) SI SIGUE SILENCIO: despedida con escucha (en vez de colgar directo)
         if phase == "initial" and attempt >= 3:
-            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_initial -> hangup")
-            say_slow(vr, despedida())
-            vr.hangup()
+            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_initial -> goodbye_con_escucha")
+            despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
             return Response(str(vr), mimetype="text/xml")
 
         # FOLLOWUP: repetir 1 vez y luego colgar
@@ -276,15 +303,13 @@ def ivr_llm():
             return Response(str(vr), mimetype="text/xml")
 
         if phase == "followup" and attempt >= 2:
-            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_followup -> hangup")
-            say_slow(vr, despedida())
-            vr.hangup()
+            logging.warning(f"[CALL {call_sid}] EVENTO: silencio_final_followup -> goodbye_con_escucha")
+            despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
             return Response(str(vr), mimetype="text/xml")
 
         # Fallback seguro: si llega acá por algún phase raro, cuelga
-        logging.warning(f"[CALL {call_sid}] EVENTO: silencio_fallback -> hangup phase={phase} attempt={attempt}")
-        say_slow(vr, despedida())
-        vr.hangup()
+        logging.warning(f"[CALL {call_sid}] EVENTO: silencio_fallback -> goodbye_con_escucha phase={phase} attempt={attempt}")
+        despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
         return Response(str(vr), mimetype="text/xml")
 
     # ==============================================================
@@ -322,9 +347,8 @@ def ivr_llm():
 
     # colgar
     if "colgar" in texto or "nada más" in texto:
-        logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_hangup")
-        say_slow(vr, despedida())
-        vr.hangup()
+        logging.warning(f"[CALL {call_sid}] EVENTO: despedida_y_goodbye_con_escucha")
+        despedida_con_escucha(vr, "/ivr-llm?phase=goodbye&attempt=2")
         return Response(str(vr), mimetype="text/xml")
 
     # contacto/web fijo
@@ -401,6 +425,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
