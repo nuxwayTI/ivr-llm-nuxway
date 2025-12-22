@@ -90,7 +90,6 @@ Nuestros servicios:
 # =========================
 def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="98%"):
     """
-    Mejora de naturalidad:
     - Rate por defecto 98%.
     - Pausas cortas por puntuación para sonar humano.
     - Si empieza con "Hola", enfatiza solo el saludo.
@@ -235,20 +234,25 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
-        # ✅ CAMBIO: ahora el mensaje inicial va dentro de Gather con bargeIn=True
+        # ✅ CAMBIO: el inicio se "protege" hasta Nuxway Technology (sin bargeIn)
+        # ✅ y SOLO desde "Antes..." se activa escucha (bargeIn=True) dentro del Gather
         if phase == "initial" and attempt == 1:
-            mensaje = (
+            parte_protegida = (
                 "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
-                "para compartir un saludo de fin de año. "
-                "Antes, ¿con quién tengo el gusto?"
+                "para compartir un saludo de fin de año."
             )
+            parte_escuchable = "Antes, ¿con quién tengo el gusto?"
 
             base_url = os.getenv("BASE_URL", "").rstrip("/")
             if base_url:
                 vr.play(f"{base_url}/silence.wav")
 
-            logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
+            logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio_protegido): {parte_protegida} {parte_escuchable}")
 
+            # 1) Dice la parte protegida sin barge-in
+            say_slow(vr, parte_protegida)
+
+            # 2) Desde "Antes..." sí escucha (barge-in)
             g = Gather(
                 input="speech dtmf",
                 language="es-MX",
@@ -259,11 +263,11 @@ def ivr_llm():
                 action_on_empty_result=True,
                 bargeIn=True
             )
-            say_slow(g, mensaje)  # ✅ decir dentro del Gather para que escuche mientras habla
+            say_slow(g, parte_escuchable)
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
-        # ✅ CAMBIO: repetición también dentro de Gather con bargeIn=True
+        # ✅ CAMBIO: este mensaje completo sí permite barge-in (todo dentro del Gather)
         if phase == "initial" and attempt == 2:
             mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto?"
             logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
@@ -278,7 +282,7 @@ def ivr_llm():
                 action_on_empty_result=True,
                 bargeIn=True
             )
-            say_slow(g, mensaje_rep)  # ✅ decir dentro del Gather para que escuche mientras habla
+            say_slow(g, mensaje_rep)
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
@@ -301,7 +305,7 @@ def ivr_llm():
                 action_on_empty_result=True,
                 bargeIn=True
             )
-            say_slow(g, msg)  # ✅ también aquí para coherencia (escucha mientras habla)
+            say_slow(g, msg)
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
@@ -419,8 +423,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
-
 
 
