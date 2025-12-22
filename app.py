@@ -210,7 +210,7 @@ def ivr_llm():
             mensaje = (
                 "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
                 "para compartir un saludo de fin de año. "
-                "Antes, ¿con quién hablo?"
+                "Antes, ¿con quién tengo el gusto?"
             )
 
             base_url = os.getenv("BASE_URL", "").rstrip("/")
@@ -234,7 +234,7 @@ def ivr_llm():
 
         # 2) SI NO RESPONDEN DESPUÉS DEL MENSAJE INICIAL: repetir 1 vez
         if phase == "initial" and attempt == 2:
-            mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién hablo?"
+            mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto"
             logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
             say_slow(vr, mensaje_rep)
 
