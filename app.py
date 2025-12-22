@@ -38,6 +38,15 @@ Reglas de estilo:
 - Respuestas cortas (2–3 frases) y claras.
 - Evita repetir “soy IA” si no te lo preguntan.
 
+Reglas para voz (teléfono):
+- Escribe como si estuvieras hablando, no como chat.
+- Máximo 2 frases por respuesta.
+- Solo 1 pregunta por turno.
+- Usa conectores humanos: "perfecto", "claro", "listo", "entiendo" (máx 1 por respuesta).
+- Si tengo el nombre del usuario, úsalo 1 vez por respuesta (no más).
+- Evita enumeraciones largas; ofrece “¿Quieres que te lo detalle?”.
+- Evita sonar como un formulario; usa frases cortas y naturales.
+
 Identidad:
 - Si el usuario pregunta “¿quién eres?”, “con quién tengo el gusto?”, “de dónde llamas?”:
   responde que eres el asistente con IA de Nuxway Technology y que puedes comunicar con un humano si lo desea.
@@ -56,6 +65,7 @@ Manejo de dudas y preguntas difíciles:
 - Si no estás 100% seguro, NO inventes.
 - Responde breve: "Para darte una respuesta correcta, prefiero confirmarlo con un especialista."
 - Luego ofrece comunicar con un humano o ingeniero.
+
 # Servicios oficiales de Nuxway Technology (NO inventar):
 - Si el usuario pregunta por “servicios”, “qué hacen”, “a qué se dedican”, “qué ofrecen”, “soluciones”, “productos”, “áreas”, “portafolio”:
   1) Responde primero con un resumen humano de 1–2 frases.
@@ -73,38 +83,47 @@ Nuestros servicios:
 • Cableado estructurado: diseño, instalación y mantenimiento de redes de voz y datos con certificación.
 • Diseño web básico y presencia digital: creación de páginas web institucionales y comerciales en plataformas como Wix, orientadas a una rápida presencia en línea.
 • Implementación y asesoría en sistemas CRM, ERP: organización y gestión de clientes, seguimiento comercial, automatización de procesos y reportes.
-
 """
 
 # =========================
-# SAY helper (SSML: habla más lento) + ✅ PRO: énfasis en el saludo
+# SAY helper (SSML: más humano con pausas)
 # =========================
-def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="95%"):
+def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="98%"):
     """
-    Versión PRO:
-    - Si el texto empieza con "Hola" o "¡Hola!", le agrega énfasis al saludo para que no suene plano.
-    - Mantiene el resto del código igual.
+    Mejora de naturalidad:
+    - Rate por defecto 98% (pedido).
+    - Pausas cortas por puntuación para sonar humano.
+    - Si empieza con "Hola", enfatiza solo el saludo.
     """
     t = (text or "").strip()
 
+    # Micro-pausas para voz (sin cambiar contenido)
+    # Ojo: no tocamos preguntas ni lógica, solo SSML.
+    def add_breaks(s: str) -> str:
+        s = re.sub(r"\.\s+", ".<break time=\"180ms\"/> ", s)
+        s = re.sub(r"\?\s+", "?<break time=\"220ms\"/> ", s)
+        s = re.sub(r"!\s+", "!<break time=\"200ms\"/> ", s)
+        s = re.sub(r",\s+", ",<break time=\"120ms\"/> ", s)
+        return s
+
+    t_ssml = add_breaks(t)
+
     # Detecta saludo al inicio y lo mejora con SSML
     if t.lower().startswith("hola"):
-        # Separa el "Hola" inicial (con o sin signos) del resto
         m = re.match(r"^(¡?hola!?)(.*)$", t, flags=re.IGNORECASE)
         if m:
-            hola = m.group(1)
-            resto = (m.group(2) or "").strip()
+            hola = add_breaks(m.group(1))
+            resto = add_breaks((m.group(2) or "").strip())
             ssml = (
                 f"<speak><prosody rate=\"{rate}\">"
                 f"<emphasis level=\"moderate\">{hola}</emphasis>"
-                f"{(' ' + resto) if resto else ''}"
+                f"{('<break time=\"160ms\"/>' + resto) if resto else ''}"
                 f"</prosody></speak>"
             )
             vr.say(ssml, language=language, voice=voice)
             return
 
-    # Default
-    ssml = f"<speak><prosody rate=\"{rate}\">{t}</prosody></speak>"
+    ssml = f"<speak><prosody rate=\"{rate}\">{t_ssml}</prosody></speak>"
     vr.say(ssml, language=language, voice=voice)
 
 # =========================
@@ -126,7 +145,8 @@ def llamar_gpt(call_sid: str, prompt_usuario: str, max_tokens: int = 220) -> str
         "model": "gpt-4.1-mini",
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": 0.2,
+        # Un poco más humano (menos rígido) sin volverse loco
+        "temperature": 0.35,
     }
 
     r = session.post(OPENAI_URL, json=data, headers=headers, timeout=8)
@@ -159,7 +179,7 @@ def transferir_a_agente(vr):
 def despedida():
     return "Perfecto. Gracias por la conversación. Hasta luego."
 
-# ✅ NUEVO: despedida con escucha (barge-in) para no perder segundos valiosos
+# ✅ despedida con escucha (barge-in) para no perder segundos valiosos
 def despedida_con_escucha(vr: VoiceResponse, action_url: str):
     """
     Dice la despedida pero permite que el usuario interrumpa hablando o marcando teclas.
@@ -168,15 +188,15 @@ def despedida_con_escucha(vr: VoiceResponse, action_url: str):
     """
     g = Gather(
         input="speech dtmf",
-        language="es-ES",
+        # Unificamos idioma con el TTS para LatAm (evita sensación rara y mejora STT)
+        language="es-MX",
         action=action_url,
         method="POST",
         timeout=2,
-        speech_timeout="1",
+        speech_timeout="auto",
         bargeIn=True,
         action_on_empty_result=True
     )
-    # Importante: decir dentro del Gather, no directo en vr
     say_slow(g, despedida())
     vr.append(g)
 
@@ -227,7 +247,7 @@ def ivr_llm():
     # ==============================================================
     if not speech and not digits:
 
-        # ✅ NUEVO: si ya dimos despedida con escucha y siguió silencio -> colgar
+        # ✅ si ya dimos despedida con escucha y siguió silencio -> colgar
         if phase == "goodbye" and attempt >= 2:
             logging.warning(f"[CALL {call_sid}] EVENTO: goodbye_silencio -> hangup")
             vr.hangup()
@@ -250,11 +270,12 @@ def ivr_llm():
 
             g = Gather(
                 input="speech dtmf",
-                language="es-ES",
+                # ✅ Unificado con TTS para LatAm
+                language="es-MX",
                 action="/ivr-llm?phase=initial&attempt=2",
                 method="POST",
                 timeout=3,
-                speech_timeout="1",
+                speech_timeout="auto",
                 action_on_empty_result=True
             )
             vr.append(g)
@@ -262,17 +283,17 @@ def ivr_llm():
 
         # 2) SI NO RESPONDEN DESPUÉS DEL MENSAJE INICIAL: repetir 1 vez
         if phase == "initial" and attempt == 2:
-            mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto"
+            mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto?"
             logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
             say_slow(vr, mensaje_rep)
 
             g = Gather(
                 input="speech dtmf",
-                language="es-ES",
+                language="es-MX",
                 action="/ivr-llm?phase=initial&attempt=3",
                 method="POST",
                 timeout=3,
-                speech_timeout="1",
+                speech_timeout="auto",
                 action_on_empty_result=True
             )
             vr.append(g)
@@ -292,11 +313,11 @@ def ivr_llm():
 
             g = Gather(
                 input="speech dtmf",
-                language="es-ES",
+                language="es-MX",
                 action="/ivr-llm?phase=followup&attempt=2",
                 method="POST",
                 timeout=3,
-                speech_timeout="1",
+                speech_timeout="auto",
                 action_on_empty_result=True
             )
             vr.append(g)
@@ -372,11 +393,11 @@ def ivr_llm():
 
         g2 = Gather(
             input="speech dtmf",
-            language="es-ES",
+            language="es-MX",
             action="/ivr-llm?phase=followup&attempt=1",
             method="POST",
             timeout=3,
-            speech_timeout="1",
+            speech_timeout="auto",
             action_on_empty_result=True
         )
         vr.append(g2)
@@ -406,11 +427,11 @@ def ivr_llm():
 
     g2 = Gather(
         input="speech dtmf",
-        language="es-ES",
+        language="es-MX",
         action="/ivr-llm?phase=followup&attempt=1",
         method="POST",
         timeout=3,
-        speech_timeout="1",
+        speech_timeout="auto",
         action_on_empty_result=True
     )
     vr.append(g2)
