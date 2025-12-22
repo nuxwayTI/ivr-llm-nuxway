@@ -235,6 +235,7 @@ def ivr_llm():
             vr.hangup()
             return Response(str(vr), mimetype="text/xml")
 
+        # ✅ CAMBIO: ahora el mensaje inicial va dentro de Gather con bargeIn=True
         if phase == "initial" and attempt == 1:
             mensaje = (
                 "Hola, ¿cómo estás? Te llamamos desde Nuxway Technology "
@@ -247,7 +248,6 @@ def ivr_llm():
                 vr.play(f"{base_url}/silence.wav")
 
             logging.warning(f"[CALL {call_sid}] ASISTENTE (inicio): {mensaje}")
-            say_slow(vr, mensaje)
 
             g = Gather(
                 input="speech dtmf",
@@ -256,15 +256,17 @@ def ivr_llm():
                 method="POST",
                 timeout=3,
                 speech_timeout="auto",
-                action_on_empty_result=True
+                action_on_empty_result=True,
+                bargeIn=True
             )
+            say_slow(g, mensaje)  # ✅ decir dentro del Gather para que escuche mientras habla
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
+        # ✅ CAMBIO: repetición también dentro de Gather con bargeIn=True
         if phase == "initial" and attempt == 2:
             mensaje_rep = "No te escuché. Te lo repito una vez más. ¿Con quién tengo el gusto?"
             logging.warning(f"[CALL {call_sid}] ASISTENTE (rep1): {mensaje_rep}")
-            say_slow(vr, mensaje_rep)
 
             g = Gather(
                 input="speech dtmf",
@@ -273,8 +275,10 @@ def ivr_llm():
                 method="POST",
                 timeout=3,
                 speech_timeout="auto",
-                action_on_empty_result=True
+                action_on_empty_result=True,
+                bargeIn=True
             )
+            say_slow(g, mensaje_rep)  # ✅ decir dentro del Gather para que escuche mientras habla
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
@@ -286,7 +290,6 @@ def ivr_llm():
         if phase == "followup" and attempt == 1:
             msg = "No te escuché. Si sigues en línea, dime en qué te puedo ayudar."
             logging.warning(f"[CALL {call_sid}] ASISTENTE (followup_rep1): {msg}")
-            say_slow(vr, msg)
 
             g = Gather(
                 input="speech dtmf",
@@ -295,8 +298,10 @@ def ivr_llm():
                 method="POST",
                 timeout=3,
                 speech_timeout="auto",
-                action_on_empty_result=True
+                action_on_empty_result=True,
+                bargeIn=True
             )
+            say_slow(g, msg)  # ✅ también aquí para coherencia (escucha mientras habla)
             vr.append(g)
             return Response(str(vr), mimetype="text/xml")
 
@@ -332,7 +337,7 @@ def ivr_llm():
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ SOLO "ingeniero" o marcar 0 transfieren (ya NO detecta "humano")
+    # ✅ SOLO "ingeniero" o marcar 0 transfieren
     if digits == "0" or "ingeniero" in texto:
         logging.warning(f"[CALL {call_sid}] EVENTO: transferencia_ingeniero")
         return transferir_a_agente(vr)
@@ -414,6 +419,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
