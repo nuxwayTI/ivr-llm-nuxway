@@ -188,10 +188,46 @@ def despedida_con_escucha(vr: VoiceResponse, action_url: str):
     say_slow(g, despedida())
     vr.append(g)
 
+# =========================
+# ✅ DETECCIÓN DE BUZÓN (MEJORADA)
+# - Solo se añade esto (no cambia tu flujo)
+# - Si detecta buzón: lo loguea y cuelga
+# =========================
 VOICEMAIL_HINTS = [
-    "buzón de voz", "buzon de voz", "deje su mensaje", "después del tono",
-    "no está disponible", "grabe su mensaje", "leave a message", "after the tone"
+    # ES - palabras base
+    "buzón de voz", "buzon de voz", "correo de voz", "buzon",
+    # ES - frases típicas de locución
+    "para dejar un mensaje", "para dejar mensaje",
+    "deje su mensaje", "deje un mensaje", "deja tu mensaje",
+    "grabe su mensaje", "graba tu mensaje",
+    "después del tono", "despues del tono", "después de la señal",
+    "no está disponible", "no esta disponible", "no puede atender",
+    "no se encuentra disponible", "no se encuentra",
+    "al escuchar el tono", "cuando escuche el tono",
+    # EN (por si carrier)
+    "leave a message", "after the tone", "voicemail", "record your message",
 ]
+
+def parece_buzon(texto: str) -> bool:
+    t = (texto or "").strip().lower()
+
+    # patrones robustos (capturan "Listo, para dejar un mensaje..." etc.)
+    patrones = [
+        r"para dejar( un)? mensaje",
+        r"deje( su| un)? mensaje",
+        r"despu[eé]s del tono",
+        r"al escuchar el tono",
+        r"cuando escuche el tono",
+        r"grabe? (su|tu) mensaje",
+        r"no (est[aá]|se encuentra) disponible",
+        r"no puede atender",
+        r"correo de voz|buz[oó]n de voz|voicemail",
+    ]
+    if any(re.search(p, t) for p in patrones):
+        return True
+
+    # fallback por keywords (suave)
+    return any(k in t for k in VOICEMAIL_HINTS)
 
 # =========================
 # 0.5s de SILENCIO (WAV)
@@ -323,6 +359,12 @@ def ivr_llm():
     if texto:
         logging.warning(f"[CALL {call_sid}] USUARIO: {texto}")
 
+    # ✅ SOLO AÑADIDO: detectar buzón, loguear y colgar
+    if parece_buzon(texto):
+        logging.warning(f"[CALL {call_sid}] EVENTO: voicemail_detectado -> hangup | texto='{texto[:160]}'")
+        vr.hangup()
+        return Response(str(vr), mimetype="text/xml")
+
     if not nombre_por_llamada[call_sid]:
         patrones_nombre = [
             r"\bme llamo\s+([a-záéíóúñ]+)\b",
@@ -335,11 +377,6 @@ def ivr_llm():
                 nombre_por_llamada[call_sid] = m.group(1).strip().title()
                 logging.warning(f"[CALL {call_sid}] NOMBRE_DETECTADO: {nombre_por_llamada[call_sid]}")
                 break
-
-    if any(v in texto for v in VOICEMAIL_HINTS):
-        logging.warning(f"[CALL {call_sid}] EVENTO: voicemail_detectado -> hangup")
-        vr.hangup()
-        return Response(str(vr), mimetype="text/xml")
 
     # ✅ SOLO "ingeniero" o marcar 0 transfieren
     if digits == "0" or "ingeniero" in texto:
@@ -423,5 +460,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
