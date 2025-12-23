@@ -88,9 +88,9 @@ Nuestros servicios:
 # =========================
 # SAY helper (SSML: más humano con pausas)
 # =========================
-def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="98%"):
+def say_slow(vr: VoiceResponse, text: str, language="es-MX", voice="Polly.Mia", rate="105%"):
     """
-    - Rate por defecto 98%.
+    - Rate por defecto 105%.
     - Pausas cortas por puntuación para sonar humano.
     - Si empieza con "Hola", enfatiza solo el saludo.
     """
