@@ -7,10 +7,10 @@ import re
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ✅ Render ENV: PBX_DOMAIN debe estar configurado
+# ✅ Variable Render: el dominio SIP o IP de tu PBX (SIN https://)
 PBX_DOMAIN = os.getenv("PBX_DOMAIN", "").strip()
 
-# ✅ DID mapping
+# ✅ Mapa de DIDs
 DID_MAP = {
     "pablo": "5000",
     "vladimir": "5001",
@@ -37,7 +37,7 @@ def transfer_to_did(vr, did):
 def ivr_llm():
     vr = VoiceResponse()
 
-    # ✅ GET sirve para probar en navegador
+    # ✅ Para prueba en navegador
     if request.method == "GET":
         say(vr, "IVR OK.")
         return Response(str(vr), mimetype="text/xml")
@@ -46,13 +46,13 @@ def ivr_llm():
     digits = request.values.get("Digits")
     call_sid = request.values.get("CallSid", "unknown")
 
-    # ✅ Validación
+    # ✅ Validación PBX_DOMAIN
     if not PBX_DOMAIN:
         say(vr, "Error de configuración. Falta PBX DOMAIN.")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # ✅ Primera interacción: pedir voz o dígitos
+    # ✅ Menú inicial
     if not speech and not digits:
         g = Gather(
             input="speech dtmf",
@@ -87,7 +87,7 @@ def ivr_llm():
     if "ingeniero" in text:
         return transfer_to_did(vr, DID_MAP["ingeniero"])
 
-    # ✅ Retry
+    # ✅ Reintento
     g = Gather(
         input="speech dtmf",
         language="es-MX",
