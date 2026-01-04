@@ -3,24 +3,82 @@ from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 import os
 import logging
 import re
+import requests
+from collections import defaultdict
+from difflib import SequenceMatcher
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ✅ Endpoint SIP real (el que ya funciona)
+# =========================
+# TWILIO -> PBX (SIP)
+# =========================
 SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
 
-# ✅ CallerID que mandaremos al PBX para enrutar internamente
+# =========================
+# RUTEO (callerId)
+# =========================
 DID_MAP = {
     "pablo": "5000",
     "gonzalo": "5001",
     "vladimir": "5002",
-    "cola": "4999"   # 👈 0 será soporte/cola
+    "paola": "5003",
+    "cola": "4999"   # soporte/cola
 }
 
-# =====================================================
-# Helpers
-# =====================================================
+# =========================
+# OPENAI
+# =========================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+session = requests.Session()
+
+# =========================
+# MEMORIA / LIMITES
+# =========================
+conversaciones = defaultdict(list)      # memoria chat por CallSid
+llm_turns = defaultdict(int)            # contador de turnos LLM por CallSid
+
+MAX_LLM_TURNS = 3   # máximo 3 turnos OpenAI por llamada (para ahorrar)
+
+# =========================
+# PROMPT SISTEMA (Nuxway)
+# =========================
+SYSTEM_PROMPT = """
+Eres el asistente telefónico de Nuxway Technology S.R.L.
+Atiendes llamadas en español, tono profesional y humano, estilo IVR moderno.
+
+Reglas:
+- Respuestas cortas: 1 a 2 frases.
+- Máximo 1 pregunta por turno.
+- No suenes robótico.
+- Si el usuario pide hablar con una persona o ingeniero, transfiere a soporte.
+
+Información real (no inventar):
+- Web: nuxway punto net
+- Email: ventas@nuxway.net
+- Teléfono: (591-4) 448362
+- Celular: (591) 70770144
+- Dirección: Calle Las Jarkas #204, Zona Mirador, Cochabamba-Bolivia
+
+Servicios (resumir, no listar todo salvo que lo pidan):
+- VoIP: centrales IP, teléfonos IP, gateways, troncales SIP, soluciones móviles.
+- Desarrollo a medida: reportes, SMS, automatización de llamadas e integraciones.
+- Redes y seguridad: firewalls, routers, switches, access points.
+- Diseño/configuración de redes de telefonía, datos y seguridad.
+- Consultoría y soporte técnico, mantenimiento, relevamientos, cableado estructurado.
+- Web básico/presencia digital, CRM/ERP.
+
+Cuando el usuario pregunte "qué hacen" o "servicios":
+- responde con 1 resumen corto y ofrece ampliar si desea.
+
+Si no estás seguro:
+- “Para darle una respuesta correcta, prefiero comunicarlo con soporte.”
+"""
+
+# =========================
+# HELPERS
+# =========================
 def say(vr, text):
     vr.say(text, language="es-MX", voice="Polly.Mia")
 
@@ -29,23 +87,50 @@ def normalize(text):
     text = re.sub(r"[^a-záéíóúñ0-9 ]+", "", text)
     return text
 
+def similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
+
+# ✅ Alias por nombre para detectar pronunciaciones raras
+NAME_ALIASES = {
+    "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
+    "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
+    "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
+    "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
+}
+
+def detect_name_from_text(text):
+    """
+    Busca el nombre aunque la frase sea larga.
+    Compara:
+    - cada palabra
+    - la frase completa
+    contra aliases.
+    """
+    words = text.split()
+    candidates = words + [text]
+
+    best_name = None
+    best_score = 0.0
+
+    for name, aliases in NAME_ALIASES.items():
+        for alias in aliases:
+            for c in candidates:
+                score = similarity(c, alias)
+                if score > best_score:
+                    best_score = score
+                    best_name = name
+
+    return best_name, best_score
+
 def transfer_with_callerid(vr, callerid):
-    """
-    ✅ Siempre transfiere al mismo SIP_ENDPOINT (6049)
-    pero cambia el callerId para que el PBX rutee según regla.
-    """
     say(vr, "Perfecto, le comunico.")
     d = Dial(callerId=callerid)
     d.sip(SIP_ENDPOINT)
     vr.append(d)
-
     logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | callerId={callerid}")
     return Response(str(vr), mimetype="text/xml")
 
 def gather_menu(action_url):
-    """
-    Menú principal profesional
-    """
     g = Gather(
         input="speech dtmf",
         language="es-MX",
@@ -56,13 +141,10 @@ def gather_menu(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Gracias por llamar a Nuxway Technology. Di Pablo, Gonzalo o Vladimir, o marque 1, 2 o 3. Para soporte, marque 0.")
+    say(g, "Gracias por llamar a Nuxway Technology. Di Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
     return g
 
 def gather_retry(action_url):
-    """
-    Reintento (cuando dijo algo pero no coincide)
-    """
     g = Gather(
         input="speech dtmf",
         language="es-MX",
@@ -73,18 +155,52 @@ def gather_retry(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Di Pablo, Gonzalo o Vladimir, o marque 1, 2 o 3. Para soporte, marque 0.")
+    say(g, "Disculpe, no lo entendí. Di Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
     return g
 
-# =====================================================
-# RUTA PRINCIPAL
-# =====================================================
+def llamar_openai(call_sid, user_text):
+    """
+    Llama a OpenAI con memoria. Respuesta corta.
+    """
+    if not OPENAI_API_KEY:
+        return "En este momento no tengo acceso al asistente inteligente. Lo comunico con soporte."
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += conversaciones[call_sid]
+    messages.append({"role": "user", "content": user_text})
+
+    data = {
+        "model": "gpt-4.1-mini",
+        "messages": messages,
+        "max_tokens": 140,
+        "temperature": 0.25,
+    }
+
+    r = session.post(OPENAI_URL, json=data, headers=headers, timeout=10)
+    if r.status_code != 200:
+        logging.warning(f"[CALL {call_sid}] OpenAI error status={r.status_code} body={r.text[:200]}")
+        return "Tengo un inconveniente técnico. Lo comunico con soporte."
+
+    respuesta = r.json()["choices"][0]["message"]["content"].strip()
+
+    conversaciones[call_sid].append({"role": "user", "content": user_text})
+    conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
+
+    return respuesta
+
+# =========================
+# MAIN ROUTE
+# =========================
 @app.route("/ivr-llm", methods=["GET", "POST"])
 def ivr_llm():
     vr = VoiceResponse()
 
     try:
-        # ✅ GET: prueba en navegador
         if request.method == "GET":
             say(vr, "IVR OK.")
             return Response(str(vr), mimetype="text/xml")
@@ -92,64 +208,89 @@ def ivr_llm():
         speech = request.values.get("SpeechResult")
         digits = request.values.get("Digits")
         call_sid = request.values.get("CallSid", "unknown")
-
-        # Detectar intento
         attempt = int(request.args.get("attempt", "1"))
 
-        # ✅ Si viene vacío (silencio)
+        # ✅ Silencio: repetir 1 vez y luego colgar
         if not speech and not digits:
             if attempt == 1:
-                # Menú 1
                 vr.append(gather_menu("/ivr-llm?attempt=2"))
                 return Response(str(vr), mimetype="text/xml")
             else:
-                # Menú repetido 1 vez y si sigue vacío -> cuelga
                 say(vr, "No hemos recibido respuesta. Gracias por llamar a Nuxway Technology. Hasta luego.")
                 vr.hangup()
                 return Response(str(vr), mimetype="text/xml")
 
         text = normalize(speech)
-        logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}'")
+        logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
-        # ✅ Ruteo por teclas
+        # =========================
+        # 1) DTMF routing
+        # =========================
         if digits == "1":
             return transfer_with_callerid(vr, DID_MAP["pablo"])
         if digits == "2":
             return transfer_with_callerid(vr, DID_MAP["gonzalo"])
         if digits == "3":
             return transfer_with_callerid(vr, DID_MAP["vladimir"])
+        if digits == "4":
+            return transfer_with_callerid(vr, DID_MAP["paola"])
         if digits == "0":
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
-        # ✅ Ruteo por voz
-        if "pablo" in text:
-            return transfer_with_callerid(vr, DID_MAP["pablo"])
-        if "gonzalo" in text:
-            return transfer_with_callerid(vr, DID_MAP["gonzalo"])
-        if "vladimir" in text:
-            return transfer_with_callerid(vr, DID_MAP["vladimir"])
-        if "soporte" in text or "cola" in text or "ingeniero" in text:
+        # =========================
+        # 2) Voice routing (keywords)
+        # =========================
+        if any(k in text for k in ["soporte", "ingeniero", "agente", "humano", "operador", "cola"]):
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
-        # ✅ Si dijo algo pero no coincide, reintenta una vez
-        if attempt == 1:
-            vr.append(gather_retry("/ivr-llm?attempt=2"))
-            return Response(str(vr), mimetype="text/xml")
+        # Match directo por nombre
+        for name in ["pablo", "gonzalo", "vladimir", "paola"]:
+            if name in text:
+                return transfer_with_callerid(vr, DID_MAP[name])
 
-        # ✅ Si ya reintentó y sigue sin coincidir -> manda a soporte
-        say(vr, "Lo comunico con soporte.")
-        return transfer_with_callerid(vr, DID_MAP["cola"])
+        # =========================
+        # 3) Fuzzy match para pronunciaciones
+        # =========================
+        bm, score = detect_name_from_text(text)
+        if bm and score >= 0.78:
+            logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
+            return transfer_with_callerid(vr, DID_MAP[bm])
+
+        # =========================
+        # 4) OpenAI fallback inteligente
+        # =========================
+        if llm_turns[call_sid] >= MAX_LLM_TURNS:
+            say(vr, "Para continuar, lo comunico con soporte.")
+            return transfer_with_callerid(vr, DID_MAP["cola"])
+
+        llm_turns[call_sid] += 1
+        respuesta = llamar_openai(call_sid, text)
+        say(vr, respuesta)
+
+        # Pregunta corta para seguir o mandar a soporte
+        g = Gather(
+            input="speech dtmf",
+            language="es-MX",
+            timeout=4,
+            speech_timeout="auto",
+            action="/ivr-llm?attempt=1",
+            method="POST",
+            bargeIn=True,
+            action_on_empty_result=True
+        )
+        say(g, "Si desea hablar con soporte, marque cero. O puede continuar con su consulta.")
+        vr.append(g)
+        return Response(str(vr), mimetype="text/xml")
 
     except Exception as e:
-        # ✅ Para evitar que Twilio diga "Application error"
         logging.exception(f"ERROR en /ivr-llm: {e}")
-        say(vr, "Hubo un problema técnico. Intente nuevamente.")
+        say(vr, "Hubo un problema técnico. Gracias por llamar a Nuxway Technology.")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-# =====================================================
+# =========================
 # HOME
-# =====================================================
+# =========================
 @app.route("/", methods=["GET"])
 def home():
     return "OK"
