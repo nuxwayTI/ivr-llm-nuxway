@@ -99,7 +99,7 @@ NAME_ALIASES = {
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
     "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
     "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
-     "ximena": ["xime", "xime na", "xi mena", "xim ena", "xime na", "ximen a"],
+    "ximena": ["ximena", "xime", "xime na", "xi mena", "xim ena", "ximen a"],
 }
 
 def detect_name_from_text(text):
@@ -145,10 +145,12 @@ def saludo_por_hora():
     return "Buenas noches."
 
 def gather_menu(action_url):
+    # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
     g = Gather(
-        input="speech dtmf",
+        input="dtmf speech",
+        num_digits=1,
         language="es-MX",
-        timeout=4,
+        timeout=6,
         speech_timeout="auto",
         action=action_url,
         method="POST",
@@ -157,18 +159,19 @@ def gather_menu(action_url):
     )
     msg = (
         f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
-       "Diga Pablo, Gonzalo, Vladimir o Paola para comunicarse con un Ingeniero. "
-       "Para soporte, marque 0."
-       
+        "Diga Pablo, Gonzalo, Vladimir o Paola para comunicarse con un Ingeniero. "
+        "Para soporte, marque 0."
     )
     say(g, msg)
     return g
 
 def gather_retry(action_url):
+    # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
     g = Gather(
-        input="speech dtmf",
+        input="dtmf speech",
+        num_digits=1,
         language="es-MX",
-        timeout=4,
+        timeout=6,
         speech_timeout="auto",
         action=action_url,
         method="POST",
@@ -279,6 +282,8 @@ def ivr_llm():
         call_sid = request.values.get("CallSid", "unknown")
         attempt = int(request.args.get("attempt", "1"))
 
+        logging.warning(f"[DTMF] digits recibido: {digits}")
+
         # ✅ Silencio: repetir 1 vez y luego colgar
         if not speech and not digits:
             if attempt == 1:
@@ -303,6 +308,8 @@ def ivr_llm():
             return transfer_with_callerid(vr, DID_MAP["vladimir"])
         if digits == "4":
             return transfer_with_callerid(vr, DID_MAP["paola"])
+        if digits == "5":
+            return transfer_with_callerid(vr, DID_MAP["ximena"])
         if digits == "0":
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
@@ -312,7 +319,7 @@ def ivr_llm():
         if any(k in text for k in ["soporte", "ingeniero", "agente", "humano", "operador", "cola"]):
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
-        for name in ["pablo", "gonzalo", "vladimir", "paola"]:
+        for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
                 return transfer_with_callerid(vr, DID_MAP[name])
 
@@ -335,17 +342,19 @@ def ivr_llm():
         respuesta = llamar_openai(call_sid, text)
         say(vr, respuesta)
 
+        # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
         g = Gather(
-            input="speech dtmf",
+            input="dtmf speech",
+            num_digits=1,
             language="es-MX",
-            timeout=4,
+            timeout=6,
             speech_timeout="auto",
             action="/ivr-llm?attempt=1",
             method="POST",
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Si desea hablar con un ingeniero o soporte, Diga el nombre o marque cero. O puede continuar con su consulta.")
+        say(g, "Si desea hablar con un ingeniero o soporte, diga el nombre o marque cero. O puede continuar con su consulta.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
@@ -365,3 +374,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
