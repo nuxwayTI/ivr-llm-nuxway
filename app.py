@@ -2,14 +2,16 @@ from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import re
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ✅ Dominio/IP donde Twilio envía la troncal SIP
-PBX_DOMAIN = "TU_PBX_DOMAIN_O_IP"
+# ✅ Variables para Render
+PBX_DOMAIN = os.getenv("PBX_DOMAIN", "").strip()
+BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 
-# ✅ Mapa de DID por destino lógico
+# ✅ Mapa de DID
 DID_MAP = {
     "pablo": "5000",
     "vladimir": "5001",
@@ -20,9 +22,8 @@ def say(vr, text):
     vr.say(text, language="es-MX", voice="Polly.Mia")
 
 def transfer_to_did(vr, did):
-    say(vr, f"Listo. Te transfiero ahora.")
+    say(vr, "Listo. Te transfiero ahora.")
     d = vr.dial()
-    # ✅ Esto es lo que hace que entre como DID al PBX
     d.sip(f"sip:{did}@{PBX_DOMAIN}")
     return Response(str(vr), mimetype="text/xml")
 
@@ -38,25 +39,34 @@ def ivr():
 
     vr = VoiceResponse()
 
-    # ✅ Primera interacción / Recolectar voz o teclas
+    # ✅ Validaciones clave para evitar crasheos
+    if not PBX_DOMAIN:
+        say(vr, "Error de configuración. Falta PBX_DOMAIN.")
+        return Response(str(vr), mimetype="text/xml")
+
+    if not BASE_URL:
+        say(vr, "Error de configuración. Falta BASE_URL.")
+        return Response(str(vr), mimetype="text/xml")
+
+    # ✅ Primer menú
     if not speech and not digits:
         g = Gather(
             input="speech dtmf",
             language="es-MX",
             timeout=4,
             speech_timeout="auto",
-            action="/ivr",
+            action=f"{BASE_URL}/ivr",
             method="POST",
             bargeIn=True
         )
-        say(g, "Hola. Dime Pablo, Vladimir, o Ingeniero. También puedes marcar 1, 2 o 0.")
+        say(g, "Hola. Dime Pablo, Vladimir o Ingeniero. También puedes marcar 1, 2 o 0.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
     text = normalize(speech)
     logging.info(f"USER: speech='{text}' digits='{digits}'")
 
-    # ✅ Ruteo por DTMF
+    # ✅ DTMF
     if digits == "1":
         return transfer_to_did(vr, DID_MAP["pablo"])
     if digits == "2":
@@ -64,7 +74,7 @@ def ivr():
     if digits == "0":
         return transfer_to_did(vr, DID_MAP["ingeniero"])
 
-    # ✅ Ruteo por voz (palabras clave)
+    # ✅ Voz
     if "pablo" in text:
         return transfer_to_did(vr, DID_MAP["pablo"])
     if "vladimir" in text:
@@ -72,13 +82,13 @@ def ivr():
     if "ingeniero" in text:
         return transfer_to_did(vr, DID_MAP["ingeniero"])
 
-    # ✅ No se entendió: reintento
+    # ✅ Reintento
     g = Gather(
         input="speech dtmf",
         language="es-MX",
         timeout=4,
         speech_timeout="auto",
-        action="/ivr",
+        action=f"{BASE_URL}/ivr",
         method="POST",
         bargeIn=True
     )
@@ -86,13 +96,13 @@ def ivr():
     vr.append(g)
     return Response(str(vr), mimetype="text/xml")
 
-
 @app.route("/")
 def home():
     return "IVR OK"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
 
 
