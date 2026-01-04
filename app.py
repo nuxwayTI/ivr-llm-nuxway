@@ -343,7 +343,7 @@ def ivr_llm():
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Si desea hablar con soporte, marque cero. O puede continuar con su consulta.")
+        say(g, "Si desea hablar con un ingeniero o soporte, Diga el nombre o marque cero. O puede continuar con su consulta.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
