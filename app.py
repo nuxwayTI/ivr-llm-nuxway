@@ -1,4 +1,4 @@
-from flask import Flask, request, Response
+from flask import Flask, request, Response, jsonify
 from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 import os
 import logging
@@ -6,6 +6,8 @@ import re
 import requests
 from collections import defaultdict
 from difflib import SequenceMatcher
+from datetime import datetime
+import pytz
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -100,7 +102,7 @@ NAME_ALIASES = {
 
 def detect_name_from_text(text):
     """
-    Busca el nombre aunque la frase sea larga.
+    Detecta el nombre aunque la frase sea larga.
     Compara:
     - cada palabra
     - la frase completa
@@ -130,6 +132,16 @@ def transfer_with_callerid(vr, callerid):
     logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | callerId={callerid}")
     return Response(str(vr), mimetype="text/xml")
 
+def saludo_por_hora():
+    # GMT-4 (La Paz)
+    tz = pytz.timezone("America/La_Paz")
+    h = datetime.now(tz).hour
+    if 5 <= h < 12:
+        return "Buenos días."
+    if 12 <= h < 19:
+        return "Buenas tardes."
+    return "Buenas noches."
+
 def gather_menu(action_url):
     g = Gather(
         input="speech dtmf",
@@ -141,7 +153,12 @@ def gather_menu(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Gracias por llamar a Nuxway Technology. Di Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
+    msg = (
+        f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
+        "Diga Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. "
+        "Para soporte, marque 0."
+    )
+    say(g, msg)
     return g
 
 def gather_retry(action_url):
@@ -155,14 +172,16 @@ def gather_retry(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Di Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
+    say(g, "Disculpe, no lo entendí. Diga Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
     return g
 
 def llamar_openai(call_sid, user_text):
     """
     Llama a OpenAI con memoria. Respuesta corta.
+    Loguea status para debug.
     """
     if not OPENAI_API_KEY:
+        logging.error("[OPENAI] OPENAI_API_KEY VACIA")
         return "En este momento no tengo acceso al asistente inteligente. Lo comunico con soporte."
 
     headers = {
@@ -181,20 +200,67 @@ def llamar_openai(call_sid, user_text):
         "temperature": 0.25,
     }
 
-    r = session.post(OPENAI_URL, json=data, headers=headers, timeout=10)
-    if r.status_code != 200:
-        logging.warning(f"[CALL {call_sid}] OpenAI error status={r.status_code} body={r.text[:200]}")
-        return "Tengo un inconveniente técnico. Lo comunico con soporte."
+    try:
+        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=15)
+        logging.warning(f"[OPENAI] status={r.status_code} body={r.text[:200]}")
 
-    respuesta = r.json()["choices"][0]["message"]["content"].strip()
+        if r.status_code != 200:
+            return "Tengo un inconveniente técnico. Lo comunico con soporte."
 
-    conversaciones[call_sid].append({"role": "user", "content": user_text})
-    conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
+        respuesta = r.json()["choices"][0]["message"]["content"].strip()
 
-    return respuesta
+        conversaciones[call_sid].append({"role": "user", "content": user_text})
+        conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
+
+        return respuesta
+
+    except Exception as e:
+        logging.exception(f"[OPENAI] EXCEPTION: {e}")
+        return "Estoy teniendo un inconveniente técnico. Lo comunico con soporte."
 
 # =========================
-# MAIN ROUTE
+# DEBUG ENDPOINTS
+# =========================
+@app.route("/debug-openai", methods=["GET"])
+def debug_openai():
+    if not OPENAI_API_KEY:
+        return "OPENAI_API_KEY NO CARGADA", 200
+    return "OPENAI_API_KEY OK", 200
+
+@app.route("/test-openai", methods=["GET"])
+def test_openai():
+    """
+    Prueba real contra OpenAI para ver si responde.
+    """
+    if not OPENAI_API_KEY:
+        return jsonify({"ok": False, "error": "OPENAI_API_KEY NO CARGADA"}), 200
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "gpt-4.1-mini",
+        "messages": [
+            {"role": "system", "content": "Responde solo con 'OK'."},
+            {"role": "user", "content": "test"}
+        ],
+        "max_tokens": 5,
+        "temperature": 0
+    }
+
+    try:
+        r = session.post(OPENAI_URL, json=data, headers=headers, timeout=15)
+        return jsonify({
+            "ok": r.status_code == 200,
+            "status": r.status_code,
+            "body": r.text[:500]
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+# =========================
+# MAIN IVR
 # =========================
 @app.route("/ivr-llm", methods=["GET", "POST"])
 def ivr_llm():
@@ -238,18 +304,17 @@ def ivr_llm():
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
         # =========================
-        # 2) Voice routing (keywords)
+        # 2) Voice keywords
         # =========================
         if any(k in text for k in ["soporte", "ingeniero", "agente", "humano", "operador", "cola"]):
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
-        # Match directo por nombre
         for name in ["pablo", "gonzalo", "vladimir", "paola"]:
             if name in text:
                 return transfer_with_callerid(vr, DID_MAP[name])
 
         # =========================
-        # 3) Fuzzy match para pronunciaciones
+        # 3) Fuzzy match para nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
@@ -267,7 +332,6 @@ def ivr_llm():
         respuesta = llamar_openai(call_sid, text)
         say(vr, respuesta)
 
-        # Pregunta corta para seguir o mandar a soporte
         g = Gather(
             input="speech dtmf",
             language="es-MX",
@@ -298,4 +362,3 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
