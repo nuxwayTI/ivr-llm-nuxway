@@ -25,6 +25,7 @@ DID_MAP = {
     "gonzalo": "5001",
     "vladimir": "5002",
     "paola": "5003",
+    "ximena": "5004",
     "cola": "4999"   # soporte/cola
 }
 
@@ -98,6 +99,7 @@ NAME_ALIASES = {
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
     "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
     "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
+     "ximena": ["xime", "xime na", "xi mena", "xim ena", "xime na", "ximen a"],
 }
 
 def detect_name_from_text(text):
@@ -173,7 +175,7 @@ def gather_retry(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Diga Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. Para soporte, marque 0.")
+    say(g, "Disculpe, no lo entendí. Diga Pablo, Gonzalo, Vladimir o Paola. Para soporte, marque 0.")
     return g
 
 def llamar_openai(call_sid, user_text):
