@@ -7,10 +7,10 @@ import re
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ✅ Obligatorio: IP/Dominio del PBX al que Twilio debe mandar la llamada SIP
+# ✅ Render ENV: PBX_DOMAIN debe estar configurado
 PBX_DOMAIN = os.getenv("PBX_DOMAIN", "").strip()
 
-# ✅ Mapear nombres a DIDs
+# ✅ DID mapping
 DID_MAP = {
     "pablo": "5000",
     "vladimir": "5001",
@@ -33,10 +33,11 @@ def transfer_to_did(vr, did):
     d.sip(destino)
     return Response(str(vr), mimetype="text/xml")
 
-@app.route("/ivr-llm", methods=["POST", "GET"])
+@app.route("/ivr-llm", methods=["GET", "POST"])
 def ivr_llm():
     vr = VoiceResponse()
 
+    # ✅ GET sirve para probar en navegador
     if request.method == "GET":
         say(vr, "IVR OK.")
         return Response(str(vr), mimetype="text/xml")
@@ -45,12 +46,13 @@ def ivr_llm():
     digits = request.values.get("Digits")
     call_sid = request.values.get("CallSid", "unknown")
 
+    # ✅ Validación
     if not PBX_DOMAIN:
-        say(vr, "Falta configurar PBX DOMAIN en el servidor.")
+        say(vr, "Error de configuración. Falta PBX DOMAIN.")
         vr.hangup()
         return Response(str(vr), mimetype="text/xml")
 
-    # Primera vez -> pedir voz o teclas
+    # ✅ Primera interacción: pedir voz o dígitos
     if not speech and not digits:
         g = Gather(
             input="speech dtmf",
@@ -62,14 +64,14 @@ def ivr_llm():
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Hola. ¿Con quién quieres comunicarte? Di: Pablo, Vladimir o Ingeniero. También puedes marcar 1, 2 o 0.")
+        say(g, "Hola. ¿Con quién quieres comunicarte? Di Pablo, Vladimir o Ingeniero. También puedes marcar 1, 2 o 0.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
     text = normalize(speech)
     logging.info(f"[CALL {call_sid}] speech='{text}' digits='{digits}'")
 
-    # DTMF
+    # ✅ DTMF routing
     if digits == "1":
         return transfer_to_did(vr, DID_MAP["pablo"])
     if digits == "2":
@@ -77,7 +79,7 @@ def ivr_llm():
     if digits == "0":
         return transfer_to_did(vr, DID_MAP["ingeniero"])
 
-    # Voz
+    # ✅ Voice routing
     if "pablo" in text:
         return transfer_to_did(vr, DID_MAP["pablo"])
     if "vladimir" in text:
@@ -85,7 +87,7 @@ def ivr_llm():
     if "ingeniero" in text:
         return transfer_to_did(vr, DID_MAP["ingeniero"])
 
-    # Reintento
+    # ✅ Retry
     g = Gather(
         input="speech dtmf",
         language="es-MX",
@@ -104,7 +106,7 @@ def ivr_llm():
 def debug():
     return f"PBX_DOMAIN='{PBX_DOMAIN}'"
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def home():
     return "OK"
 
