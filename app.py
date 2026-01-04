@@ -26,7 +26,7 @@ DID_MAP = {
     "vladimir": "5002",
     "paola": "5003",
     "ximena": "5004",
-    "cola": "4999"   # soporte/cola
+    "cola": "5009"   # ✅ soporte/cola (ANTES: 4999)
 }
 
 # =========================
@@ -39,10 +39,10 @@ session = requests.Session()
 # =========================
 # MEMORIA / LIMITES
 # =========================
-conversaciones = defaultdict(list)      # memoria chat por CallSid
-llm_turns = defaultdict(int)            # contador de turnos LLM por CallSid
+conversaciones = defaultdict(list)
+llm_turns = defaultdict(int)
 
-MAX_LLM_TURNS = 3   # máximo 3 turnos OpenAI por llamada (para ahorrar)
+MAX_LLM_TURNS = 3
 
 # =========================
 # PROMPT SISTEMA (Nuxway)
@@ -93,7 +93,7 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# ✅ Alias por nombre para detectar pronunciaciones raras
+# ✅ Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
@@ -103,16 +103,8 @@ NAME_ALIASES = {
 }
 
 def detect_name_from_text(text):
-    """
-    Detecta el nombre aunque la frase sea larga.
-    Compara:
-    - cada palabra
-    - la frase completa
-    contra aliases.
-    """
     words = text.split()
     candidates = words + [text]
-
     best_name = None
     best_score = 0.0
 
@@ -135,7 +127,6 @@ def transfer_with_callerid(vr, callerid):
     return Response(str(vr), mimetype="text/xml")
 
 def saludo_por_hora():
-    # GMT-4 (La Paz)
     tz = pytz.timezone("America/La_Paz")
     h = datetime.now(tz).hour
     if 5 <= h < 12:
@@ -145,7 +136,6 @@ def saludo_por_hora():
     return "Buenas noches."
 
 def gather_menu(action_url):
-    # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
     g = Gather(
         input="dtmf speech",
         num_digits=1,
@@ -159,14 +149,13 @@ def gather_menu(action_url):
     )
     msg = (
         f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
-        "Diga Pablo, Gonzalo, Vladimir o Paola para comunicarse con un Ingeniero. "
+        "Diga Pablo, Gonzalo, Vladimir, Paola o Ximena, o marque 1, 2, 3, 4 o 5. "
         "Para soporte, marque 0."
     )
     say(g, msg)
     return g
 
 def gather_retry(action_url):
-    # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
     g = Gather(
         input="dtmf speech",
         num_digits=1,
@@ -178,14 +167,10 @@ def gather_retry(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Diga Pablo, Gonzalo, Vladimir o Paola. Para soporte, marque 0.")
+    say(g, "Disculpe, no lo entendí. Diga un nombre o marque 1, 2, 3, 4 o 5. Para soporte, marque 0.")
     return g
 
 def llamar_openai(call_sid, user_text):
-    """
-    Llama a OpenAI con memoria. Respuesta corta.
-    Loguea status para debug.
-    """
     if not OPENAI_API_KEY:
         logging.error("[OPENAI] OPENAI_API_KEY VACIA")
         return "En este momento no tengo acceso al asistente inteligente. Lo comunico con soporte."
@@ -235,9 +220,6 @@ def debug_openai():
 
 @app.route("/test-openai", methods=["GET"])
 def test_openai():
-    """
-    Prueba real contra OpenAI para ver si responde.
-    """
     if not OPENAI_API_KEY:
         return jsonify({"ok": False, "error": "OPENAI_API_KEY NO CARGADA"}), 200
 
@@ -284,7 +266,6 @@ def ivr_llm():
 
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
-        # ✅ Silencio: repetir 1 vez y luego colgar
         if not speech and not digits:
             if attempt == 1:
                 vr.append(gather_menu("/ivr-llm?attempt=2"))
@@ -314,17 +295,20 @@ def ivr_llm():
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
         # =========================
-        # 2) Voice keywords
+        # 2) Voice keywords soporte
         # =========================
-        if any(k in text for k in ["soporte", "ingeniero", "agente", "humano", "operador", "cola"]):
+        if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "ingeniero", "agente", "humano", "operador", "cola"]):
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
+        # =========================
+        # 3) Voice directo por nombre
+        # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
                 return transfer_with_callerid(vr, DID_MAP[name])
 
         # =========================
-        # 3) Fuzzy match para nombres
+        # 4) Fuzzy match para nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
@@ -332,17 +316,16 @@ def ivr_llm():
             return transfer_with_callerid(vr, DID_MAP[bm])
 
         # =========================
-        # 4) OpenAI fallback inteligente
+        # 5) OpenAI fallback inteligente
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
-            say(vr, "Para continuar, lo comunico con soporte.")
+            say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
         say(vr, respuesta)
 
-        # ✅ MEJORA: DTMF primero + num_digits para capturar 0 rápido
         g = Gather(
             input="dtmf speech",
             num_digits=1,
@@ -354,7 +337,7 @@ def ivr_llm():
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Si desea hablar con un ingeniero o soporte, diga el nombre o marque cero. O puede continuar con su consulta.")
+        say(g, "Si desea soporte, marque cero. O puede continuar con su consulta.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
