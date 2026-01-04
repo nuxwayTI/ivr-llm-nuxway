@@ -60,7 +60,7 @@ Información real (no inventar):
 - Web: nuxway punto net
 - Email: ventas@nuxway.net
 - Teléfono: (591-4) 448362
-- Celular: (591) 70770144
+- Celular: (591) 61786583
 - Dirección: Calle Las Jarkas #204, Zona Mirador, Cochabamba-Bolivia
 
 Servicios (resumir, no listar todo salvo que lo pidan):
@@ -155,8 +155,9 @@ def gather_menu(action_url):
     )
     msg = (
         f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
-        "Diga Pablo, Gonzalo, Vladimir o Paola, o marque 1, 2, 3 o 4. "
-        "Para soporte, marque 0."
+       "Diga Pablo, Gonzalo, Vladimir o Paola para comunicarse con un Ingeniero. "
+       "Para soporte, marque 0."
+       
     )
     say(g, msg)
     return g
