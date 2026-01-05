@@ -1,3 +1,4 @@
+```python
 from flask import Flask, request, Response, jsonify
 from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 import os
@@ -26,7 +27,7 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "5109"   # ✅ soporte/cola (ANTES: 4999)
+    "cola": "5109"   # ✅ soporte/cola
 }
 
 # =========================
@@ -55,7 +56,8 @@ Reglas:
 - Respuestas cortas: 1 a 2 frases.
 - Máximo 1 pregunta por turno.
 - No suenes robótico.
-- Si el usuario pide hablar con una persona o ingeniero, transfiere a soporte.
+- Si el usuario pide hablar con una persona específica (por nombre), transfiere con esa persona.
+- Si el usuario pide soporte o un ingeniero (genérico), transfiere a soporte.
 
 Información real (no inventar):
 - Web: nuxway punto net
@@ -149,8 +151,8 @@ def gather_menu(action_url):
     )
     msg = (
         f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
-        "Diga Pablo, Gonzalo, Vladimir, Paola o Ximena, o marque 1, 2, 3, 4 o 5. "
-        "Para soporte, marque 0."
+        "Diga el nombre de la persona con la que desea comunicarse. "
+        "Para soporte, marque cero o diga soporte."
     )
     say(g, msg)
     return g
@@ -167,7 +169,7 @@ def gather_retry(action_url):
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Diga un nombre o marque 1, 2, 3, 4 o 5. Para soporte, marque 0.")
+    say(g, "Disculpe, no lo entendí. Diga el nombre de la persona. Para soporte, marque cero o diga soporte.")
     return g
 
 def llamar_openai(call_sid, user_text):
@@ -279,7 +281,7 @@ def ivr_llm():
         logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
         # =========================
-        # 1) DTMF routing
+        # 1) DTMF routing (se mantiene por compatibilidad)
         # =========================
         if digits == "1":
             return transfer_with_callerid(vr, DID_MAP["pablo"])
@@ -295,25 +297,32 @@ def ivr_llm():
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
         # =========================
-        # 2) Voice keywords soporte
+        # 2) Voice: si dicen "soporte" (explícito) -> soporte SIEMPRE
         # =========================
-        if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "ingeniero", "agente", "humano", "operador", "cola"]):
+        if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
             return transfer_with_callerid(vr, DID_MAP["cola"])
 
         # =========================
-        # 3) Voice directo por nombre
+        # 3) Voice directo por nombre (prioridad sobre "ingeniero")
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
                 return transfer_with_callerid(vr, DID_MAP[name])
 
         # =========================
-        # 4) Fuzzy match para nombres
+        # 4) Fuzzy match para nombres (prioridad sobre "ingeniero")
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
             return transfer_with_callerid(vr, DID_MAP[bm])
+
+        # =========================
+        # 4.1) Si piden "ingeniero" / "humano" / "operador" genérico -> soporte
+        # (pero solo si no detectamos nombre)
+        # =========================
+        if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
+            return transfer_with_callerid(vr, DID_MAP["cola"])
 
         # =========================
         # 5) OpenAI fallback inteligente
@@ -337,7 +346,7 @@ def ivr_llm():
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Si desea soporte, marque cero. O puede continuar con su consulta.")
+        say(g, "Diga el nombre de la persona con la que desea comunicarse. Para soporte, marque cero o diga soporte.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
@@ -357,4 +366,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
+```
