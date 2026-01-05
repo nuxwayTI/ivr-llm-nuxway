@@ -21,12 +21,12 @@ SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
 # RUTEO (callerId)
 # =========================
 DID_MAP = {
-    "pablo": "5000",
-    "gonzalo": "5001",
-    "vladimir": "5002",
-    "paola": "5003",
-    "ximena": "5004",
-    "cola": "5009"   # ✅ soporte/cola (ANTES: 4999)
+    "pablo": "5100",
+    "gonzalo": "5101",
+    "vladimir": "5102",
+    "paola": "5103",
+    "ximena": "5104",
+    "cola": "5109"   # ✅ soporte/cola (ANTES: 4999)
 }
 
 # =========================
