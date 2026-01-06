@@ -18,7 +18,7 @@ app = Flask(__name__)
 SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
 
 # =========================
-# RUTEO (callerId)
+# RUTEO (target interno PBX)
 # =========================
 DID_MAP = {
     "pablo": "5100",
@@ -26,7 +26,17 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "5109"   # ✅ soporte/cola
+    "cola": "5109"   # soporte/cola
+}
+
+# Extensiones marcables (DTMF) -> destino
+EXT_MAP = {
+    "4000": "pablo",
+    "4001": "gonzalo",
+    "4002": "vladimir",
+    "4003": "paola",
+    "4007": "ximena",
+    "0": "cola",
 }
 
 # =========================
@@ -41,7 +51,6 @@ session = requests.Session()
 # =========================
 conversaciones = defaultdict(list)
 llm_turns = defaultdict(int)
-
 MAX_LLM_TURNS = 3
 
 # =========================
@@ -90,13 +99,14 @@ def say(vr, text):
 
 def normalize(text):
     text = (text or "").lower().strip()
-    text = re.sub(r"[^a-záéíóúñ0-9 ]+", "", text)
+    text = re.sub(r"[^a-záéíóúñ0-9 ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# ✅ Alias nombres
+# Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
@@ -121,13 +131,54 @@ def detect_name_from_text(text):
 
     return best_name, best_score
 
-def transfer_with_callerid(vr, callerid):
-    say(vr, "Perfecto, le comunico.")
-    d = Dial(callerId=callerid)
-    d.sip(SIP_ENDPOINT)
-    vr.append(d)
-    logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | callerId={callerid}")
-    return Response(str(vr), mimetype="text/xml")
+# Palabras -> dígitos (para "cuatro cero cero uno")
+NUM_WORDS = {
+    "cero": "0",
+    "zero": "0",
+    "uno": "1", "un": "1", "una": "1",
+    "dos": "2",
+    "tres": "3",
+    "cuatro": "4",
+    "cinco": "5",
+    "seis": "6",
+    "siete": "7",
+    "ocho": "8",
+    "nueve": "9",
+}
+
+def extract_extension_from_speech(text: str) -> str | None:
+    """
+    Acepta:
+      - "4001"
+      - "4 0 0 1"
+      - "cuatro cero cero uno"
+      - "marcar 4 0 0 2"
+    Devuelve un string de dígitos (ej "4001") o None
+    """
+    if not text:
+        return None
+
+    # 1) Si ya contiene un bloque de dígitos tipo 4001 o 4000 etc.
+    m = re.search(r"\b\d{2,6}\b", text)
+    if m:
+        return m.group(0)
+
+    tokens = text.split()
+
+    # 2) Si viene como "4 0 0 1" (tokens dígito a dígito)
+    digit_tokens = [t for t in tokens if t.isdigit() and len(t) == 1]
+    if len(digit_tokens) >= 2:
+        return "".join(digit_tokens)
+
+    # 3) Si viene como "cuatro cero cero uno"
+    mapped = []
+    for t in tokens:
+        if t in NUM_WORDS:
+            mapped.append(NUM_WORDS[t])
+    if len(mapped) >= 2:
+        return "".join(mapped)
+
+    return None
 
 def saludo_por_hora():
     tz = pytz.timezone("America/La_Paz")
@@ -141,7 +192,9 @@ def saludo_por_hora():
 def gather_menu(action_url):
     g = Gather(
         input="dtmf speech",
-        num_digits=1,
+        # Captura variable: termina con # o por timeout
+        num_digits=10,
+        finish_on_key="#",
         language="es-MX",
         timeout=6,
         speech_timeout="auto",
@@ -153,7 +206,8 @@ def gather_menu(action_url):
     msg = (
         f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
         "Diga el nombre de la persona con la que desea comunicarse. "
-        "Para soporte, marque cero o diga soporte."
+        "Para soporte, marque cero o diga soporte. "
+        "Si desea marcar una extensión, márquela y presione numeral."
     )
     say(g, msg)
     return g
@@ -161,17 +215,35 @@ def gather_menu(action_url):
 def gather_retry(action_url):
     g = Gather(
         input="dtmf speech",
-        num_digits=4,
+        num_digits=10,
+        finish_on_key="#",
         language="es-MX",
-        timeout=8,
+        timeout=7,
         speech_timeout="auto",
         action=action_url,
         method="POST",
         bargeIn=True,
         action_on_empty_result=True
     )
-    say(g, "Disculpe, no lo entendí. Diga el nombre de la persona. Para soporte, marque cero o diga soporte.")
+    say(g, "Disculpe, no lo entendí. Diga el nombre, o para soporte marque cero o diga soporte. Para extensión, márquela y presione numeral.")
     return g
+
+def transfer_to_target(vr: VoiceResponse, target_ext: str, from_number: str, call_sid: str):
+    """
+    Mantiene caller real (From) y envía el destino como header SIP.
+    """
+    say(vr, "Perfecto, le comunico.")
+    d = Dial(callerId=from_number)
+
+    sip = d.sip(SIP_ENDPOINT)
+    # Parametros -> Twilio los manda como headers SIP X-... al PBX (según soporte)
+    sip.parameter(name="X-Nuxway-Target", value=str(target_ext))
+    sip.parameter(name="X-Nuxway-CallSid", value=str(call_sid))
+    sip.parameter(name="X-Nuxway-OriginalFrom", value=str(from_number))
+
+    vr.append(d)
+    logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | from={from_number} target={target_ext} callSid={call_sid}")
+    return Response(str(vr), mimetype="text/xml")
 
 def llamar_openai(call_sid, user_text):
     if not OPENAI_API_KEY:
@@ -262,14 +334,18 @@ def ivr_llm():
             say(vr, "IVR OK.")
             return Response(str(vr), mimetype="text/xml")
 
-        speech = request.values.get("SpeechResult")
-        digits = request.values.get("Digits")
+        speech = request.values.get("SpeechResult") or ""
+        digits = (request.values.get("Digits") or "").strip()
         call_sid = request.values.get("CallSid", "unknown")
         attempt = int(request.args.get("attempt", "1"))
 
-        logging.warning(f"[DTMF] digits recibido: {digits}")
+        from_number = request.values.get("From", "")  # ✅ caller real
+        text = normalize(speech)
 
-        if not speech and not digits:
+        logging.warning(f"[DTMF] digits recibido: '{digits}'")
+        logging.info(f"[CALL {call_sid}] attempt={attempt} from='{from_number}' speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
+
+        if not text and not digits:
             if attempt == 1:
                 vr.append(gather_menu("/ivr-llm?attempt=2"))
                 return Response(str(vr), mimetype="text/xml")
@@ -278,59 +354,57 @@ def ivr_llm():
                 vr.hangup()
                 return Response(str(vr), mimetype="text/xml")
 
-        text = normalize(speech)
-        logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
+        # =========================
+        # 1) DTMF: extensiones completas (4000, 4001...) o 0
+        # =========================
+        if digits:
+            if digits in EXT_MAP:
+                who = EXT_MAP[digits]
+                target = DID_MAP[who]
+                return transfer_to_target(vr, target, from_number, call_sid)
 
         # =========================
-        # 1) DTMF routing (se mantiene por compatibilidad)
+        # 1.1) Voz: si dicen números (4001 / "4 0 0 1" / "cuatro cero...")
         # =========================
-        if digits == "4000":
-            return transfer_with_callerid(vr, DID_MAP["pablo"])
-        if digits == "4001":
-            return transfer_with_callerid(vr, DID_MAP["gonzalo"])
-        if digits == "4002":
-            return transfer_with_callerid(vr, DID_MAP["vladimir"])
-        if digits == "4003":
-            return transfer_with_callerid(vr, DID_MAP["paola"])
-        if digits == "4007":
-            return transfer_with_callerid(vr, DID_MAP["ximena"])
-        if digits == "0":
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+        ext_spoken = extract_extension_from_speech(text)
+        if ext_spoken and ext_spoken in EXT_MAP:
+            who = EXT_MAP[ext_spoken]
+            target = DID_MAP[who]
+            return transfer_to_target(vr, target, from_number, call_sid)
 
         # =========================
-        # 2) Voice: si dicen "soporte" (explícito) -> soporte SIEMPRE
+        # 2) Voz: "soporte" explícito -> soporte siempre
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
 
         # =========================
-        # 3) Voice directo por nombre (prioridad sobre "ingeniero")
+        # 3) Voz directo por nombre
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
-                return transfer_with_callerid(vr, DID_MAP[name])
+                return transfer_to_target(vr, DID_MAP[name], from_number, call_sid)
 
         # =========================
-        # 4) Fuzzy match para nombres (prioridad sobre "ingeniero")
+        # 4) Fuzzy match para nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
-            return transfer_with_callerid(vr, DID_MAP[bm])
+            return transfer_to_target(vr, DID_MAP[bm], from_number, call_sid)
 
         # =========================
-        # 4.1) Si piden "ingeniero" / "humano" / "operador" genérico -> soporte
-        # (pero solo si no detectamos nombre)
+        # 4.1) "ingeniero" genérico -> soporte (si no hay nombre)
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
 
         # =========================
         # 5) OpenAI fallback inteligente
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
@@ -338,16 +412,17 @@ def ivr_llm():
 
         g = Gather(
             input="dtmf speech",
-            num_digits=4,
+            num_digits=10,
+            finish_on_key="#",
             language="es-MX",
-            timeout=8,
+            timeout=7,
             speech_timeout="auto",
             action="/ivr-llm?attempt=1",
             method="POST",
             bargeIn=True,
             action_on_empty_result=True
         )
-        say(g, "Diga el nombre de la persona con la que desea comunicarse. Para soporte, marque cero o diga soporte.")
+        say(g, "Diga el nombre. Para soporte marque cero o diga soporte. Para extensión, márquela y presione numeral.")
         vr.append(g)
         return Response(str(vr), mimetype="text/xml")
 
