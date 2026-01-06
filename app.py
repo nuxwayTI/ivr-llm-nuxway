@@ -14,11 +14,12 @@ app = Flask(__name__)
 
 # =========================
 # TWILIO -> PBX (SIP)
+# Opción 1: marcar directo a extensión por SIP URI (5100, 5101, etc.)
 # =========================
-SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
+SIP_DOMAIN = "nuxway.sip.twilio.com"
 
 # =========================
-# RUTEO (target interno PBX)
+# RUTEO (extensiones internas)
 # =========================
 DID_MAP = {
     "pablo": "5100",
@@ -29,7 +30,7 @@ DID_MAP = {
     "cola": "5109"   # soporte/cola
 }
 
-# Extensiones marcables (DTMF) -> destino
+# Extensiones marcables por DTMF/voz
 EXT_MAP = {
     "4000": "pablo",
     "4001": "gonzalo",
@@ -106,7 +107,7 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# Alias nombres
+# ✅ Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
@@ -146,7 +147,7 @@ NUM_WORDS = {
     "nueve": "9",
 }
 
-def extract_extension_from_speech(text: str) -> str | None:
+def extract_extension_from_speech(text):
     """
     Acepta:
       - "4001"
@@ -158,19 +159,19 @@ def extract_extension_from_speech(text: str) -> str | None:
     if not text:
         return None
 
-    # 1) Si ya contiene un bloque de dígitos tipo 4001 o 4000 etc.
+    # 1) bloque de dígitos: 4001, 4000, etc.
     m = re.search(r"\b\d{2,6}\b", text)
     if m:
         return m.group(0)
 
     tokens = text.split()
 
-    # 2) Si viene como "4 0 0 1" (tokens dígito a dígito)
+    # 2) tokens tipo "4 0 0 1"
     digit_tokens = [t for t in tokens if t.isdigit() and len(t) == 1]
     if len(digit_tokens) >= 2:
         return "".join(digit_tokens)
 
-    # 3) Si viene como "cuatro cero cero uno"
+    # 3) palabras "cuatro cero cero uno"
     mapped = []
     for t in tokens:
         if t in NUM_WORDS:
@@ -192,9 +193,8 @@ def saludo_por_hora():
 def gather_menu(action_url):
     g = Gather(
         input="dtmf speech",
-        # Captura variable: termina con # o por timeout
-        num_digits=10,
-        finish_on_key="#",
+        num_digits=10,          # captura variable (hasta 10)
+        finish_on_key="#",      # termina con #
         language="es-MX",
         timeout=6,
         speech_timeout="auto",
@@ -228,21 +228,19 @@ def gather_retry(action_url):
     say(g, "Disculpe, no lo entendí. Diga el nombre, o para soporte marque cero o diga soporte. Para extensión, márquela y presione numeral.")
     return g
 
-def transfer_to_target(vr: VoiceResponse, target_ext: str, from_number: str, call_sid: str):
+def transfer_to_ext(vr, ext, from_number):
     """
-    Mantiene caller real (From) y envía el destino como header SIP.
+    Opción 1: marcamos directo a la extensión en el SIP URI.
+    Mantiene caller real.
     """
     say(vr, "Perfecto, le comunico.")
-    d = Dial(callerId=from_number)
+    d = Dial(callerId=from_number)  # ✅ caller real
 
-    sip = d.sip(SIP_ENDPOINT)
-    # Parametros -> Twilio los manda como headers SIP X-... al PBX (según soporte)
-    sip.parameter(name="X-Nuxway-Target", value=str(target_ext))
-    sip.parameter(name="X-Nuxway-CallSid", value=str(call_sid))
-    sip.parameter(name="X-Nuxway-OriginalFrom", value=str(from_number))
+    sip_uri = f"sip:{ext}@{SIP_DOMAIN}"
+    d.sip(sip_uri)
 
     vr.append(d)
-    logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | from={from_number} target={target_ext} callSid={call_sid}")
+    logging.warning(f"TRANSFER -> {sip_uri} | callerId(real)={from_number}")
     return Response(str(vr), mimetype="text/xml")
 
 def llamar_openai(call_sid, user_text):
@@ -358,10 +356,10 @@ def ivr_llm():
         # 1) DTMF: extensiones completas (4000, 4001...) o 0
         # =========================
         if digits:
+            # si el usuario presiona #, Twilio manda lo que haya antes
             if digits in EXT_MAP:
                 who = EXT_MAP[digits]
-                target = DID_MAP[who]
-                return transfer_to_target(vr, target, from_number, call_sid)
+                return transfer_to_ext(vr, DID_MAP[who], from_number)
 
         # =========================
         # 1.1) Voz: si dicen números (4001 / "4 0 0 1" / "cuatro cero...")
@@ -369,21 +367,20 @@ def ivr_llm():
         ext_spoken = extract_extension_from_speech(text)
         if ext_spoken and ext_spoken in EXT_MAP:
             who = EXT_MAP[ext_spoken]
-            target = DID_MAP[who]
-            return transfer_to_target(vr, target, from_number, call_sid)
+            return transfer_to_ext(vr, DID_MAP[who], from_number)
 
         # =========================
         # 2) Voz: "soporte" explícito -> soporte siempre
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
-            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
+            return transfer_to_ext(vr, DID_MAP["cola"], from_number)
 
         # =========================
         # 3) Voz directo por nombre
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
-                return transfer_to_target(vr, DID_MAP[name], from_number, call_sid)
+                return transfer_to_ext(vr, DID_MAP[name], from_number)
 
         # =========================
         # 4) Fuzzy match para nombres
@@ -391,20 +388,20 @@ def ivr_llm():
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
-            return transfer_to_target(vr, DID_MAP[bm], from_number, call_sid)
+            return transfer_to_ext(vr, DID_MAP[bm], from_number)
 
         # =========================
         # 4.1) "ingeniero" genérico -> soporte (si no hay nombre)
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
-            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
+            return transfer_to_ext(vr, DID_MAP["cola"], from_number)
 
         # =========================
         # 5) OpenAI fallback inteligente
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
-            return transfer_to_target(vr, DID_MAP["cola"], from_number, call_sid)
+            return transfer_to_ext(vr, DID_MAP["cola"], from_number)
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
@@ -442,3 +439,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
