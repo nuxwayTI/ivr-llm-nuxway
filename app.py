@@ -282,15 +282,15 @@ def ivr_llm():
         # =========================
         # 1) DTMF routing (se mantiene por compatibilidad)
         # =========================
-        if digits == "1":
+        if digits == "4000":
             return transfer_with_callerid(vr, DID_MAP["pablo"])
-        if digits == "2":
+        if digits == "4001":
             return transfer_with_callerid(vr, DID_MAP["gonzalo"])
-        if digits == "3":
+        if digits == "4002":
             return transfer_with_callerid(vr, DID_MAP["vladimir"])
-        if digits == "4":
+        if digits == "4003":
             return transfer_with_callerid(vr, DID_MAP["paola"])
-        if digits == "5":
+        if digits == "4007":
             return transfer_with_callerid(vr, DID_MAP["ximena"])
         if digits == "0":
             return transfer_with_callerid(vr, DID_MAP["cola"])
