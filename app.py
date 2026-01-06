@@ -161,9 +161,9 @@ def gather_menu(action_url):
 def gather_retry(action_url):
     g = Gather(
         input="dtmf speech",
-        num_digits=1,
+        num_digits=4,
         language="es-MX",
-        timeout=6,
+        timeout=8,
         speech_timeout="auto",
         action=action_url,
         method="POST",
@@ -338,9 +338,9 @@ def ivr_llm():
 
         g = Gather(
             input="dtmf speech",
-            num_digits=1,
+            num_digits=4,
             language="es-MX",
-            timeout=6,
+            timeout=8,
             speech_timeout="auto",
             action="/ivr-llm?attempt=1",
             method="POST",
