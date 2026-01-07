@@ -13,20 +13,22 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # =========================
-# TWILIO -> PBX (SIP)
+# DOMINIO SIP (Twilio SIP Domain)
 # =========================
-SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
+SIP_DOMAIN = "nuxway.sip.twilio.com"
 
 # =========================
-# RUTEO (callerId)
+# RUTEO (DID interno por persona)
+# 5000 Pablo, 5001 Gonzalo, etc.
+# (esto es el "DID/To" que Yeastar debe rutear en Inbound Routes)
 # =========================
 DID_MAP = {
-    "pablo": "5100",
-    "gonzalo": "5101",
-    "vladimir": "5102",
-    "paola": "5103",
-    "ximena": "5104",
-    "cola": "5109"   # ✅ soporte/cola
+    "pablo": "5000",
+    "gonzalo": "5001",
+    "vladimir": "5002",
+    "paola": "5003",
+    "ximena": "5004",
+    "cola": "5009"   # ✅ soporte/cola (DID de entrada a cola)
 }
 
 # =========================
@@ -41,7 +43,6 @@ session = requests.Session()
 # =========================
 conversaciones = defaultdict(list)
 llm_turns = defaultdict(int)
-
 MAX_LLM_TURNS = 3
 
 # =========================
@@ -94,6 +95,10 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
+def sip_target(did_or_ext: str) -> str:
+    # Construye el destino SIP en tu Twilio SIP Domain
+    return f"sip:{did_or_ext}@{SIP_DOMAIN}"
+
 # ✅ Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
@@ -119,12 +124,19 @@ def detect_name_from_text(text):
 
     return best_name, best_score
 
-def transfer_with_callerid(vr, callerid):
+def transfer_to_did(vr, did_value: str):
+    """
+    Transfiere a un DID/entrada SIP (5000/5001/...) para que Yeastar enrute por Inbound Routes.
+    IMPORTANTE: NO seteamos callerId, así NO pisamos el caller real.
+    """
     say(vr, "Perfecto, le comunico.")
-    d = Dial(callerId=callerid)
-    d.sip(SIP_ENDPOINT)
+    target = sip_target(did_value)
+
+    d = Dial()  # ✅ sin callerId => preserva el caller (si Twilio lo recibe)
+    d.sip(target)
     vr.append(d)
-    logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | callerId={callerid}")
+
+    logging.warning(f"TRANSFER -> {target} | callerId=preservado")
     return Response(str(vr), mimetype="text/xml")
 
 def saludo_por_hora():
@@ -265,7 +277,7 @@ def ivr_llm():
         call_sid = request.values.get("CallSid", "unknown")
         attempt = int(request.args.get("attempt", "1"))
 
-        # ✅ LOG: CALLER REAL (Twilio -> Webhook)
+        # ✅ LOG: TWILIO PARAMS (para depurar caller real / To / etc.)
         tw_from = request.values.get("From") or ""
         tw_caller = request.values.get("Caller") or request.values.get("CallerNumber") or ""
         tw_to = request.values.get("To") or ""
@@ -277,9 +289,7 @@ def ivr_llm():
             f"[TWILIO] CallSid={call_sid} From={tw_from} Caller={tw_caller} To={tw_to} "
             f"Direction={direction} Status={call_status} ApiVersion={api_version}"
         )
-        # (opcional) ver qué params exactos te está mandando Twilio
         logging.info(f"[TWILIO][RAW_KEYS] {sorted(list(request.values.keys()))}")
-
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
         if not speech and not digits:
@@ -295,55 +305,55 @@ def ivr_llm():
         logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
         # =========================
-        # 1) DTMF routing (se mantiene por compatibilidad)
+        # 1) DTMF routing (compatibilidad)
+        # Nota: esto manda al DID interno (5000/5001/...)
         # =========================
         if digits == "4000":
-            return transfer_with_callerid(vr, DID_MAP["pablo"])
+            return transfer_to_did(vr, DID_MAP["pablo"])
         if digits == "4001":
-            return transfer_with_callerid(vr, DID_MAP["gonzalo"])
+            return transfer_to_did(vr, DID_MAP["gonzalo"])
         if digits == "4002":
-            return transfer_with_callerid(vr, DID_MAP["vladimir"])
+            return transfer_to_did(vr, DID_MAP["vladimir"])
         if digits == "4003":
-            return transfer_with_callerid(vr, DID_MAP["paola"])
+            return transfer_to_did(vr, DID_MAP["paola"])
         if digits == "4007":
-            return transfer_with_callerid(vr, DID_MAP["ximena"])
+            return transfer_to_did(vr, DID_MAP["ximena"])
         if digits == "0":
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_did(vr, DID_MAP["cola"])
 
         # =========================
-        # 2) Voice: si dicen "soporte" (explícito) -> soporte SIEMPRE
+        # 2) Voice: si dicen "soporte" -> soporte SIEMPRE
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_did(vr, DID_MAP["cola"])
 
         # =========================
-        # 3) Voice directo por nombre (prioridad sobre "ingeniero")
+        # 3) Voice directo por nombre
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
-                return transfer_with_callerid(vr, DID_MAP[name])
+                return transfer_to_did(vr, DID_MAP[name])
 
         # =========================
-        # 4) Fuzzy match para nombres (prioridad sobre "ingeniero")
+        # 4) Fuzzy match para nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
-            return transfer_with_callerid(vr, DID_MAP[bm])
+            return transfer_to_did(vr, DID_MAP[bm])
 
         # =========================
-        # 4.1) Si piden "ingeniero" / "humano" / "operador" genérico -> soporte
-        # (pero solo si no detectamos nombre)
+        # 4.1) "ingeniero/humano" genérico -> soporte
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_did(vr, DID_MAP["cola"])
 
         # =========================
         # 5) OpenAI fallback inteligente
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
-            return transfer_with_callerid(vr, DID_MAP["cola"])
+            return transfer_to_did(vr, DID_MAP["cola"])
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
@@ -380,4 +390,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
