@@ -21,8 +21,8 @@ SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
 # RUTEO (callerId)
 # =========================
 DID_MAP = {
-    "pablo": "4000",
-    "gonzalo": "4001",
+    "pablo": "5100",
+    "gonzalo": "5101",
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
@@ -265,6 +265,21 @@ def ivr_llm():
         call_sid = request.values.get("CallSid", "unknown")
         attempt = int(request.args.get("attempt", "1"))
 
+        # ✅ LOG: CALLER REAL (Twilio -> Webhook)
+        tw_from = request.values.get("From") or ""
+        tw_caller = request.values.get("Caller") or request.values.get("CallerNumber") or ""
+        tw_to = request.values.get("To") or ""
+        direction = request.values.get("Direction") or ""
+        call_status = request.values.get("CallStatus") or ""
+        api_version = request.values.get("ApiVersion") or ""
+
+        logging.warning(
+            f"[TWILIO] CallSid={call_sid} From={tw_from} Caller={tw_caller} To={tw_to} "
+            f"Direction={direction} Status={call_status} ApiVersion={api_version}"
+        )
+        # (opcional) ver qué params exactos te está mandando Twilio
+        logging.info(f"[TWILIO][RAW_KEYS] {sorted(list(request.values.keys()))}")
+
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
         if not speech and not digits:
@@ -365,3 +380,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
