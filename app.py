@@ -13,12 +13,12 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # =========================
-# TWILIO -> PBX (SIP)
+# TWILIO SIP DOMAIN
 # =========================
-SIP_ENDPOINT = "sip:6049@nuxway.sip.twilio.com"
+SIP_DOMAIN = "nuxway.sip.twilio.com"
 
 # =========================
-# RUTEO (callerId)
+# RUTEO (destino SIP por interno)
 # =========================
 DID_MAP = {
     "pablo": "5100",
@@ -41,7 +41,6 @@ session = requests.Session()
 # =========================
 conversaciones = defaultdict(list)
 llm_turns = defaultdict(int)
-
 MAX_LLM_TURNS = 3
 
 # =========================
@@ -94,30 +93,38 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-def is_valid_callerid(s: str) -> bool:
-    s = (s or "").strip()
-    # 1) E.164: +591...
-    if re.fullmatch(r"\+\d{8,15}", s):
-        return True
-    # 2) Extensiones: 2 a 8 dígitos (5100, 22, etc.)
-    if re.fullmatch(r"\d{2,8}", s):
-        return True
-    # 3) SIP URI: sip:algo@dominio
-    if re.fullmatch(r"sip:[^@;\s]+@[^;\s]+.*", s, flags=re.IGNORECASE):
-        return True
-    return False
+def is_valid_e164(s: str) -> bool:
+    return bool(re.fullmatch(r"\+\d{8,15}", (s or "").strip()))
 
-def extract_number_from_sip_header(value: str) -> str:
-    """
-    Saca +NNN... de cosas tipo:
-      <sip:+5917xxxxxxx@...>
-      sip:+5917xxxxxxx@...
-      "+5917xxxxxxx" <sip:...>
-    """
-    if not value:
+def build_sip_uri(user: str) -> str:
+    user = (user or "").strip()
+    return f"sip:{user}@{SIP_DOMAIN}"
+
+def extract_e164(text: str) -> str:
+    if not text:
         return ""
-    m = re.search(r"\+\d{8,15}", value)
+    m = re.search(r"\+\d{8,15}", text)
     return m.group(0) if m else ""
+
+def get_original_caller(tw_from: str, sip_headers: dict) -> str:
+    """
+    Devuelve caller real en E.164 si lo encuentra.
+    Prioridad:
+      1) From (si ya viene +E164)
+      2) SipHeader_P-Asserted-Identity / Remote-Party-ID / X-Original-Caller / X-ANI
+    """
+    # 1) From directo
+    num = extract_e164(tw_from)
+    if is_valid_e164(num):
+        return num
+
+    # 2) Headers (si tu PBX los manda)
+    for k in ["P-Asserted-Identity", "Remote-Party-ID", "X-Original-Caller", "X-ANI"]:
+        num = extract_e164(sip_headers.get(k, ""))
+        if is_valid_e164(num):
+            return num
+
+    return ""  # no hay caller real disponible
 
 # ✅ Alias nombres
 NAME_ALIASES = {
@@ -144,55 +151,27 @@ def detect_name_from_text(text):
 
     return best_name, best_score
 
-def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_headers=None):
+def transfer_to_user(vr, target_user: str, caller_real_e164: str):
     """
-    callerid:
-      - si viene None => no seteamos callerId
-      - si viene válido (E.164, extensión numérica, o SIP URI) => lo seteamos
+    Transfiere a sip:<target_user>@nuxway.sip.twilio.com
+    y setea callerId SOLO si tenemos el caller real (+E164).
+    """
+    sip_target = build_sip_uri(target_user)
 
-    preserve_from:
-      - valor request.values["From"] (por si quieres preservar)
-    preserve_headers:
-      - dict con headers tipo PAI/RPID/X-Original-Caller (por si quieres extraer +E164)
-    """
     say(vr, "Perfecto, le comunico.")
 
-    chosen_callerid = None
-
-    # 1) Si callerid explícito es válido, úsalo
-    if callerid is not None:
-        c = str(callerid).strip()
-        if is_valid_callerid(c):
-            chosen_callerid = c
-        else:
-            logging.warning(f"[TRANSFER] callerId inválido recibido='{c}' -> NO se setea (evita corte)")
-
-    # 2) Si NO hay callerid válido y quieres preservar, intenta sacar E.164 de headers
-    if not chosen_callerid and preserve_headers:
-        for k in ["X-Original-Caller", "X-ANI", "P-Asserted-Identity", "Remote-Party-ID"]:
-            num = extract_number_from_sip_header(preserve_headers.get(k, ""))
-            if is_valid_callerid(num):  # acá num sería +E164
-                chosen_callerid = num
-                logging.warning(f"[TRANSFER] callerId preservado desde header {k} => {chosen_callerid}")
-                break
-
-    # 3) Si aún no hay, y preserve_from trae un +E164, úsalo
-    if not chosen_callerid and preserve_from:
-        num = extract_number_from_sip_header(preserve_from)
-        if is_valid_callerid(num):
-            chosen_callerid = num
-            logging.warning(f"[TRANSFER] callerId preservado desde From => {chosen_callerid}")
-
-    # Crear Dial
-    if chosen_callerid:
-        d = Dial(callerId=chosen_callerid)
+    if caller_real_e164:
+        d = Dial(callerId=caller_real_e164)
     else:
+        # Si no hay caller real, no forzamos nada.
         d = Dial()
 
-    d.sip(SIP_ENDPOINT)
+    d.sip(sip_target)
     vr.append(d)
 
-    logging.warning(f"TRANSFER -> {SIP_ENDPOINT} | callerId={chosen_callerid if chosen_callerid else '(default/none)'}")
+    logging.warning(
+        f"TRANSFER -> {sip_target} | callerId={caller_real_e164 if caller_real_e164 else '(default/none)'}"
+    )
     return Response(str(vr), mimetype="text/xml")
 
 def saludo_por_hora():
@@ -222,21 +201,6 @@ def gather_menu(action_url):
         "Para soporte, marque cero o diga soporte."
     )
     say(g, msg)
-    return g
-
-def gather_retry(action_url):
-    g = Gather(
-        input="dtmf speech",
-        num_digits=1,
-        language="es-MX",
-        timeout=6,
-        speech_timeout="auto",
-        action=action_url,
-        method="POST",
-        bargeIn=True,
-        action_on_empty_result=True
-    )
-    say(g, "Disculpe, no lo entendí. Diga el nombre de la persona. Para soporte, marque cero o diga soporte.")
     return g
 
 def llamar_openai(call_sid, user_text):
@@ -308,11 +272,7 @@ def test_openai():
 
     try:
         r = session.post(OPENAI_URL, json=data, headers=headers, timeout=15)
-        return jsonify({
-            "ok": r.status_code == 200,
-            "status": r.status_code,
-            "body": r.text[:500]
-        }), 200
+        return jsonify({"ok": r.status_code == 200, "status": r.status_code, "body": r.text[:500]}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
 
@@ -333,7 +293,6 @@ def ivr_llm():
         call_sid = request.values.get("CallSid", "unknown")
         attempt = int(request.args.get("attempt", "1"))
 
-        # ✅ LOG: caller según Twilio + headers SIP reenviados
         tw_from = request.values.get("From") or ""
         tw_to = request.values.get("To") or ""
         direction = request.values.get("Direction") or ""
@@ -346,14 +305,15 @@ def ivr_llm():
             "Remote-Party-ID": request.values.get("SipHeader_Remote-Party-ID") or "",
         }
 
-        logging.warning(
-            f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} Direction={direction} Status={call_status}"
-        )
+        caller_real = get_original_caller(tw_from, sip_headers)
 
+        logging.warning(
+            f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} caller_real={caller_real or '(none)'} "
+            f"Direction={direction} Status={call_status}"
+        )
         if any(sip_headers.values()):
             logging.warning(
-                "[SIP_HEADERS] " +
-                " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v])
+                "[SIP_HEADERS] " + " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v])
             )
 
         logging.info(f"[TWILIO][RAW_KEYS] {sorted(list(request.values.keys()))}")
@@ -369,36 +329,38 @@ def ivr_llm():
                 return Response(str(vr), mimetype="text/xml")
 
         text = normalize(speech)
-        logging.info(f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
+        logging.info(
+            f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}"
+        )
 
         # =========================
-        # 1) DTMF routing
+        # 1) DTMF routing (compatibilidad)
         # =========================
         if digits == "4000":
-            return transfer_with_callerid(vr, DID_MAP["pablo"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["pablo"], caller_real)
         if digits == "4001":
-            return transfer_with_callerid(vr, DID_MAP["gonzalo"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["gonzalo"], caller_real)
         if digits == "4002":
-            return transfer_with_callerid(vr, DID_MAP["vladimir"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["vladimir"], caller_real)
         if digits == "4003":
-            return transfer_with_callerid(vr, DID_MAP["paola"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["paola"], caller_real)
         if digits == "4007":
-            return transfer_with_callerid(vr, DID_MAP["ximena"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["ximena"], caller_real)
         if digits == "0":
-            return transfer_with_callerid(vr, DID_MAP["cola"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
-        # 2) Voice: soporte
+        # 2) Voice: soporte (siempre)
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
         # 3) Voice directo por nombre
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
-                return transfer_with_callerid(vr, DID_MAP[name], preserve_from=tw_from, preserve_headers=sip_headers)
+                return transfer_to_user(vr, DID_MAP[name], caller_real)
 
         # =========================
         # 4) Fuzzy match nombres
@@ -406,20 +368,20 @@ def ivr_llm():
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
-            return transfer_with_callerid(vr, DID_MAP[bm], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP[bm], caller_real)
 
         # =========================
         # 4.1) humano/operador -> soporte
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
-            return transfer_with_callerid(vr, DID_MAP["cola"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
         # 5) OpenAI fallback
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
-            return transfer_with_callerid(vr, DID_MAP["cola"], preserve_from=tw_from, preserve_headers=sip_headers)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
@@ -456,6 +418,7 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
