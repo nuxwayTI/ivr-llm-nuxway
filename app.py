@@ -32,7 +32,7 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "5109"   # ✅ soporte/cola
+    "cola": "6049"   # ✅ soporte/cola
 }
 
 # =========================
