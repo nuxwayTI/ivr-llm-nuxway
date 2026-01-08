@@ -94,12 +94,18 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-def is_valid_e164(s: str) -> bool:
-    return bool(re.fullmatch(r"\+\d{8,15}", (s or "").strip()))
-
-def is_valid_sip_uri(s: str) -> bool:
-    # muy simple: sip:algo@dominio
-    return bool(re.fullmatch(r"sip:[^@;\s]+@[^;\s]+.*", (s or "").strip(), flags=re.IGNORECASE))
+def is_valid_callerid(s: str) -> bool:
+    s = (s or "").strip()
+    # 1) E.164: +591...
+    if re.fullmatch(r"\+\d{8,15}", s):
+        return True
+    # 2) Extensiones: 2 a 8 dígitos (5100, 22, etc.)
+    if re.fullmatch(r"\d{2,8}", s):
+        return True
+    # 3) SIP URI: sip:algo@dominio
+    if re.fullmatch(r"sip:[^@;\s]+@[^;\s]+.*", s, flags=re.IGNORECASE):
+        return True
+    return False
 
 def extract_number_from_sip_header(value: str) -> str:
     """
@@ -141,8 +147,8 @@ def detect_name_from_text(text):
 def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_headers=None):
     """
     callerid:
-      - si viene None => no seteamos callerId (evita cortes por valores inválidos)
-      - si viene "sip:..." válido o "+..." válido => seteamos callerId
+      - si viene None => no seteamos callerId
+      - si viene válido (E.164, extensión numérica, o SIP URI) => lo seteamos
 
     preserve_from:
       - valor request.values["From"] (por si quieres preservar)
@@ -154,9 +160,9 @@ def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_heade
     chosen_callerid = None
 
     # 1) Si callerid explícito es válido, úsalo
-    if callerid:
+    if callerid is not None:
         c = str(callerid).strip()
-        if is_valid_e164(c) or is_valid_sip_uri(c):
+        if is_valid_callerid(c):
             chosen_callerid = c
         else:
             logging.warning(f"[TRANSFER] callerId inválido recibido='{c}' -> NO se setea (evita corte)")
@@ -165,7 +171,7 @@ def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_heade
     if not chosen_callerid and preserve_headers:
         for k in ["X-Original-Caller", "X-ANI", "P-Asserted-Identity", "Remote-Party-ID"]:
             num = extract_number_from_sip_header(preserve_headers.get(k, ""))
-            if is_valid_e164(num):
+            if is_valid_callerid(num):  # acá num sería +E164
                 chosen_callerid = num
                 logging.warning(f"[TRANSFER] callerId preservado desde header {k} => {chosen_callerid}")
                 break
@@ -173,7 +179,7 @@ def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_heade
     # 3) Si aún no hay, y preserve_from trae un +E164, úsalo
     if not chosen_callerid and preserve_from:
         num = extract_number_from_sip_header(preserve_from)
-        if is_valid_e164(num):
+        if is_valid_callerid(num):
             chosen_callerid = num
             logging.warning(f"[TRANSFER] callerId preservado desde From => {chosen_callerid}")
 
@@ -181,7 +187,7 @@ def transfer_with_callerid(vr, callerid=None, preserve_from=None, preserve_heade
     if chosen_callerid:
         d = Dial(callerId=chosen_callerid)
     else:
-        d = Dial()  # ✅ NO callerId (evita cortes por 'preservado')
+        d = Dial()
 
     d.sip(SIP_ENDPOINT)
     vr.append(d)
@@ -344,7 +350,6 @@ def ivr_llm():
             f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} Direction={direction} Status={call_status}"
         )
 
-        # Solo loguea si vino algo
         if any(sip_headers.values()):
             logging.warning(
                 "[SIP_HEADERS] " +
@@ -451,5 +456,6 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
