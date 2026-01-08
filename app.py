@@ -16,6 +16,7 @@ app = Flask(__name__)
 # TWILIO SIP DOMAIN
 # =========================
 SIP_DOMAIN = "nuxway.sip.twilio.com"
+DEFAULT_FALLBACK_CALLER_SIP = f"sip:ivr@{SIP_DOMAIN}"  # ✅ evita cortes cuando no hay +E164
 
 # =========================
 # RUTEO (destino SIP por interno)
@@ -30,6 +31,16 @@ DID_MAP = {
 }
 
 # =========================
+# TUNING PARA GSM / AUDIO LENTO
+# =========================
+INITIAL_PAUSE_SEC = 1.4     # pausa antes del primer prompt (sube a 2.0 si hace falta)
+RETRY_PAUSE_SEC = 0.9       # pausa antes de reintento
+GATHER_TIMEOUT = 12         # tiempo para que empiece a hablar / marcar
+SPEECH_TIMEOUT = "3"        # espera 3s de silencio antes de cerrar speech (mejor en GSM)
+MAX_NOINPUT_ATTEMPTS = 3    # cuántas veces tolerar silencio total
+MAX_LLM_TURNS = 3           # igual que antes
+
+# =========================
 # OPENAI
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -41,7 +52,6 @@ session = requests.Session()
 # =========================
 conversaciones = defaultdict(list)
 llm_turns = defaultdict(int)
-MAX_LLM_TURNS = 3
 
 # =========================
 # PROMPT SISTEMA (Nuxway)
@@ -63,20 +73,6 @@ Información real (no inventar):
 - Teléfono: (591-4) 448362
 - Celular: (591) 61786583
 - Dirección: Calle Las Jarkas #204, Zona Mirador, Cochabamba-Bolivia
-
-Servicios (resumir, no listar todo salvo que lo pidan):
-- VoIP: centrales IP, teléfonos IP, gateways, troncales SIP, soluciones móviles.
-- Desarrollo a medida: reportes, SMS, automatización de llamadas e integraciones.
-- Redes y seguridad: firewalls, routers, switches, access points.
-- Diseño/configuración de redes de telefonía, datos y seguridad.
-- Consultoría y soporte técnico, mantenimiento, relevamientos, cableado estructurado.
-- Web básico/presencia digital, CRM/ERP.
-
-Cuando el usuario pregunte "qué hacen" o "servicios":
-- responde con 1 resumen corto y ofrece ampliar si desea.
-
-Si no estás seguro:
-- “Para darle una respuesta correcta, prefiero comunicarlo con soporte.”
 """
 
 # =========================
@@ -107,12 +103,6 @@ def extract_e164(text: str) -> str:
     return m.group(0) if m else ""
 
 def get_original_caller(tw_from: str, sip_headers: dict) -> str:
-    """
-    Devuelve caller real en E.164 si lo encuentra.
-    Prioridad:
-      1) From (si ya viene +E164)
-      2) SipHeader_P-Asserted-Identity / Remote-Party-ID / X-Original-Caller / X-ANI
-    """
     # 1) From directo
     num = extract_e164(tw_from)
     if is_valid_e164(num):
@@ -124,7 +114,31 @@ def get_original_caller(tw_from: str, sip_headers: dict) -> str:
         if is_valid_e164(num):
             return num
 
-    return ""  # no hay caller real disponible
+    return ""
+
+def saludo_por_hora():
+    tz = pytz.timezone("America/La_Paz")
+    h = datetime.now(tz).hour
+    if 5 <= h < 12:
+        return "Buenos días."
+    if 12 <= h < 19:
+        return "Buenas tardes."
+    return "Buenas noches."
+
+def gather_prompt(action_url: str, prompt_text: str):
+    g = Gather(
+        input="dtmf speech",
+        num_digits=1,
+        language="es-MX",
+        timeout=GATHER_TIMEOUT,
+        speech_timeout=SPEECH_TIMEOUT,
+        action=action_url,
+        method="POST",
+        bargeIn=True,
+        action_on_empty_result=True
+    )
+    say(g, prompt_text)
+    return g
 
 # ✅ Alias nombres
 NAME_ALIASES = {
@@ -154,64 +168,29 @@ def detect_name_from_text(text):
 def transfer_to_user(vr, target_user: str, caller_real_e164: str):
     """
     Transfiere a sip:<target_user>@nuxway.sip.twilio.com
-    y setea callerId SOLO si tenemos el caller real (+E164).
+
+    ✅ callerId:
+      - si hay +E164 real => úsalo
+      - si NO hay => usa un SIP caller fijo válido (evita cortes)
     """
     sip_target = build_sip_uri(target_user)
 
     say(vr, "Perfecto, le comunico.")
 
-    if caller_real_e164:
-        d = Dial(callerId=caller_real_e164)
-    else:
-        # Si no hay caller real, no forzamos nada.
-        d = Dial()
-
+    caller_for_dial = caller_real_e164 if caller_real_e164 else DEFAULT_FALLBACK_CALLER_SIP
+    d = Dial(callerId=caller_for_dial)
     d.sip(sip_target)
     vr.append(d)
 
-    logging.warning(
-        f"TRANSFER -> {sip_target} | callerId={caller_real_e164 if caller_real_e164 else '(default/none)'}"
-    )
+    logging.warning(f"TRANSFER -> {sip_target} | callerId={caller_for_dial}")
     return Response(str(vr), mimetype="text/xml")
-
-def saludo_por_hora():
-    tz = pytz.timezone("America/La_Paz")
-    h = datetime.now(tz).hour
-    if 5 <= h < 12:
-        return "Buenos días."
-    if 12 <= h < 19:
-        return "Buenas tardes."
-    return "Buenas noches."
-
-def gather_menu(action_url):
-    g = Gather(
-        input="dtmf speech",
-        num_digits=1,
-        language="es-MX",
-        timeout=6,
-        speech_timeout="auto",
-        action=action_url,
-        method="POST",
-        bargeIn=True,
-        action_on_empty_result=True
-    )
-    msg = (
-        f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
-        "Diga el nombre de la persona con la que desea comunicarse. "
-        "Para soporte, marque cero o diga soporte."
-    )
-    say(g, msg)
-    return g
 
 def llamar_openai(call_sid, user_text):
     if not OPENAI_API_KEY:
         logging.error("[OPENAI] OPENAI_API_KEY VACIA")
         return "En este momento no tengo acceso al asistente inteligente. Lo comunico con soporte."
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += conversaciones[call_sid]
@@ -227,15 +206,12 @@ def llamar_openai(call_sid, user_text):
     try:
         r = session.post(OPENAI_URL, json=data, headers=headers, timeout=15)
         logging.warning(f"[OPENAI] status={r.status_code} body={r.text[:200]}")
-
         if r.status_code != 200:
             return "Tengo un inconveniente técnico. Lo comunico con soporte."
 
         respuesta = r.json()["choices"][0]["message"]["content"].strip()
-
         conversaciones[call_sid].append({"role": "user", "content": user_text})
         conversaciones[call_sid].append({"role": "assistant", "content": respuesta})
-
         return respuesta
 
     except Exception as e:
@@ -256,10 +232,7 @@ def test_openai():
     if not OPENAI_API_KEY:
         return jsonify({"ok": False, "error": "OPENAI_API_KEY NO CARGADA"}), 200
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "gpt-4.1-mini",
         "messages": [
@@ -291,7 +264,10 @@ def ivr_llm():
         speech = request.values.get("SpeechResult")
         digits = request.values.get("Digits")
         call_sid = request.values.get("CallSid", "unknown")
-        attempt = int(request.args.get("attempt", "1"))
+
+        # intentos:
+        # - noinput: reintentos por silencio total
+        noinput = int(request.args.get("noinput", "1"))
 
         tw_from = request.values.get("From") or ""
         tw_to = request.values.get("To") or ""
@@ -309,32 +285,54 @@ def ivr_llm():
 
         logging.warning(
             f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} caller_real={caller_real or '(none)'} "
-            f"Direction={direction} Status={call_status}"
+            f"Direction={direction} Status={call_status} noinput={noinput}"
         )
         if any(sip_headers.values()):
-            logging.warning(
-                "[SIP_HEADERS] " + " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v])
-            )
+            logging.warning("[SIP_HEADERS] " + " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v]))
 
-        logging.info(f"[TWILIO][RAW_KEYS] {sorted(list(request.values.keys()))}")
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
+        # =========================
+        # SILENCIO TOTAL: reintenta sin colgar rápido
+        # =========================
         if not speech and not digits:
-            if attempt == 1:
-                vr.append(gather_menu("/ivr-llm?attempt=2"))
-                return Response(str(vr), mimetype="text/xml")
-            else:
-                say(vr, "No hemos recibido respuesta. Gracias por llamar a Nuxway Technology. Hasta luego.")
-                vr.hangup()
+            if noinput <= MAX_NOINPUT_ATTEMPTS:
+                vr.pause(length=RETRY_PAUSE_SEC if noinput > 1 else INITIAL_PAUSE_SEC)
+
+                if noinput == 1:
+                    prompt = (
+                        f"{saludo_por_hora()} Gracias por llamar a Nuxway Technology. "
+                        "Diga el nombre de la persona con la que desea comunicarse. "
+                        "Para soporte, marque cero o diga soporte."
+                    )
+                else:
+                    prompt = (
+                        "Disculpe, no le escuché bien. "
+                        "Diga el nombre de la persona, o marque cero para soporte."
+                    )
+
+                vr.append(gather_prompt(f"/ivr-llm?noinput={noinput+1}", prompt))
                 return Response(str(vr), mimetype="text/xml")
 
-        text = normalize(speech)
-        logging.info(
-            f"[CALL {call_sid}] attempt={attempt} speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}"
-        )
+            # muchos silencios -> NO colgar: mandar a soporte
+            say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte para ayudarle.")
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
-        # 1) DTMF routing (compatibilidad)
+        # Normalizamos speech
+        # =========================
+        text = normalize(speech)
+
+        # Si speech es demasiado corto, reintentar (evita que se vaya a OpenAI por "hola")
+        if speech and len(text.split()) <= 1 and digits is None:
+            vr.pause(length=0.4)
+            vr.append(gather_prompt("/ivr-llm?noinput=1", "Le escuché muy bajito. Dígame el nombre de la persona, por favor."))
+            return Response(str(vr), mimetype="text/xml")
+
+        logging.info(f"[CALL {call_sid}] speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
+
+        # =========================
+        # DTMF routing
         # =========================
         if digits == "4000":
             return transfer_to_user(vr, DID_MAP["pablo"], caller_real)
@@ -350,20 +348,20 @@ def ivr_llm():
             return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
-        # 2) Voice: soporte (siempre)
+        # Voice: soporte
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
-        # 3) Voice directo por nombre
+        # Voice por nombre directo
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
                 return transfer_to_user(vr, DID_MAP[name], caller_real)
 
         # =========================
-        # 4) Fuzzy match nombres
+        # Fuzzy match nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
@@ -371,42 +369,30 @@ def ivr_llm():
             return transfer_to_user(vr, DID_MAP[bm], caller_real)
 
         # =========================
-        # 4.1) humano/operador -> soporte
+        # humano/operador -> soporte
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         # =========================
-        # 5) OpenAI fallback
+        # OpenAI fallback
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
-            say(vr, "Muchas gracias. Para continuar, lo comunico con soporte.")
+            say(vr, "Para continuar, le comunico con soporte.")
             return transfer_to_user(vr, DID_MAP["cola"], caller_real)
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
         say(vr, respuesta)
 
-        g = Gather(
-            input="dtmf speech",
-            num_digits=1,
-            language="es-MX",
-            timeout=6,
-            speech_timeout="auto",
-            action="/ivr-llm?attempt=1",
-            method="POST",
-            bargeIn=True,
-            action_on_empty_result=True
-        )
-        say(g, "Diga el nombre de la persona con la que desea comunicarse. Para soporte, marque cero o diga soporte.")
-        vr.append(g)
+        vr.pause(length=0.4)
+        vr.append(gather_prompt("/ivr-llm?noinput=1", "Diga el nombre de la persona. Para soporte, marque cero o diga soporte."))
         return Response(str(vr), mimetype="text/xml")
 
     except Exception as e:
         logging.exception(f"ERROR en /ivr-llm: {e}")
-        say(vr, "Hubo un problema técnico. Gracias por llamar a Nuxway Technology.")
-        vr.hangup()
-        return Response(str(vr), mimetype="text/xml")
+        say(vr, "Hubo un problema técnico. Le comunico con soporte.")
+        return transfer_to_user(vr, DID_MAP["cola"], "")
 
 # =========================
 # HOME
