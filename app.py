@@ -16,7 +16,12 @@ app = Flask(__name__)
 # TWILIO SIP DOMAIN
 # =========================
 SIP_DOMAIN = "nuxway.sip.twilio.com"
-DEFAULT_FALLBACK_CALLER_SIP = f"sip:ivr@{SIP_DOMAIN}"  # ✅ evita cortes cuando no hay +E164
+
+# ✅ Fallback callerId cuando NO hay caller real:
+# - externo: sip:ivr@dominio (válido en SIP)
+# - interno (cuando From es sip:6802@...): número interno fijo (evita cortes/hairpin)
+DEFAULT_EXTERNAL_FALLBACK_CALLER = f"sip:ivr@{SIP_DOMAIN}"
+DEFAULT_INTERNAL_FALLBACK_CALLER = "5109"  # <-- si tu soporte/cola no es 5109, cambia aquí
 
 # =========================
 # RUTEO (destino SIP por interno)
@@ -33,12 +38,12 @@ DID_MAP = {
 # =========================
 # TUNING PARA GSM / AUDIO LENTO
 # =========================
-INITIAL_PAUSE_SEC = 1.4     # pausa antes del primer prompt (sube a 2.0 si hace falta)
-RETRY_PAUSE_SEC = 0.9       # pausa antes de reintento
-GATHER_TIMEOUT = 12         # tiempo para que empiece a hablar / marcar
-SPEECH_TIMEOUT = "3"        # espera 3s de silencio antes de cerrar speech (mejor en GSM)
-MAX_NOINPUT_ATTEMPTS = 3    # cuántas veces tolerar silencio total
-MAX_LLM_TURNS = 3           # igual que antes
+INITIAL_PAUSE_SEC = 1.4
+RETRY_PAUSE_SEC = 0.9
+GATHER_TIMEOUT = 12
+SPEECH_TIMEOUT = "3"
+MAX_NOINPUT_ATTEMPTS = 3
+MAX_LLM_TURNS = 3
 
 # =========================
 # OPENAI
@@ -78,15 +83,15 @@ Información real (no inventar):
 # =========================
 # HELPERS
 # =========================
-def say(vr, text):
+def say(vr, text: str):
     vr.say(text, language="es-MX", voice="Polly.Mia")
 
-def normalize(text):
+def normalize(text: str) -> str:
     text = (text or "").lower().strip()
     text = re.sub(r"[^a-záéíóúñ0-9 ]+", "", text)
     return text
 
-def similarity(a, b):
+def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 def is_valid_e164(s: str) -> bool:
@@ -103,18 +108,71 @@ def extract_e164(text: str) -> str:
     return m.group(0) if m else ""
 
 def get_original_caller(tw_from: str, sip_headers: dict) -> str:
-    # 1) From directo
+    """
+    Devuelve caller real en E.164 si lo encuentra.
+    Prioridad:
+      1) From (si ya viene +E164)
+      2) Headers PAI/RPID/X-Original-Caller/X-ANI
+    """
     num = extract_e164(tw_from)
     if is_valid_e164(num):
         return num
 
-    # 2) Headers (si tu PBX los manda)
     for k in ["P-Asserted-Identity", "Remote-Party-ID", "X-Original-Caller", "X-ANI"]:
         num = extract_e164(sip_headers.get(k, ""))
         if is_valid_e164(num):
             return num
 
     return ""
+
+def is_internal_sip_from(tw_from: str) -> bool:
+    """
+    True si la llamada viene desde un usuario SIP del mismo dominio:
+      sip:6802@nuxway.sip.twilio.com
+      sip:5100@nuxway.sip.twilio.com;transport=UDP
+    """
+    tw_from = (tw_from or "").strip()
+    return bool(re.match(rf"^sip:\d+@{re.escape(SIP_DOMAIN)}(\b|;)", tw_from, re.IGNORECASE))
+
+def choose_caller_for_transfer(caller_real_e164: str, tw_from: str) -> str:
+    """
+    callerId para el Dial SIP:
+      - si hay +E164 real -> úsalo
+      - si viene de interno SIP -> usa número interno fijo (evita cortes/hairpin)
+      - si no -> usa SIP caller válido fijo
+    """
+    if caller_real_e164 and is_valid_e164(caller_real_e164):
+        return caller_real_e164
+
+    if is_internal_sip_from(tw_from):
+        return DEFAULT_INTERNAL_FALLBACK_CALLER
+
+    return DEFAULT_EXTERNAL_FALLBACK_CALLER
+
+# ✅ Alias nombres
+NAME_ALIASES = {
+    "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
+    "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
+    "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
+    "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
+    "ximena": ["ximena", "xime", "xime na", "xi mena", "xim ena", "ximen a"],
+}
+
+def detect_name_from_text(text: str):
+    words = text.split()
+    candidates = words + [text]
+    best_name = None
+    best_score = 0.0
+
+    for name, aliases in NAME_ALIASES.items():
+        for alias in aliases:
+            for c in candidates:
+                score = similarity(c, alias)
+                if score > best_score:
+                    best_score = score
+                    best_name = name
+
+    return best_name, best_score
 
 def saludo_por_hora():
     tz = pytz.timezone("America/La_Paz")
@@ -140,52 +198,24 @@ def gather_prompt(action_url: str, prompt_text: str):
     say(g, prompt_text)
     return g
 
-# ✅ Alias nombres
-NAME_ALIASES = {
-    "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
-    "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
-    "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
-    "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
-    "ximena": ["ximena", "xime", "xime na", "xi mena", "xim ena", "ximen a"],
-}
-
-def detect_name_from_text(text):
-    words = text.split()
-    candidates = words + [text]
-    best_name = None
-    best_score = 0.0
-
-    for name, aliases in NAME_ALIASES.items():
-        for alias in aliases:
-            for c in candidates:
-                score = similarity(c, alias)
-                if score > best_score:
-                    best_score = score
-                    best_name = name
-
-    return best_name, best_score
-
-def transfer_to_user(vr, target_user: str, caller_real_e164: str):
+def transfer_to_user(vr, target_user: str, caller_real_e164: str, tw_from: str):
     """
     Transfiere a sip:<target_user>@nuxway.sip.twilio.com
-
-    ✅ callerId:
-      - si hay +E164 real => úsalo
-      - si NO hay => usa un SIP caller fijo válido (evita cortes)
+    y setea callerId robusto para evitar cortes en llamadas internas (sip:6802@...).
     """
     sip_target = build_sip_uri(target_user)
 
     say(vr, "Perfecto, le comunico.")
 
-    caller_for_dial = caller_real_e164 if caller_real_e164 else DEFAULT_FALLBACK_CALLER_SIP
+    caller_for_dial = choose_caller_for_transfer(caller_real_e164, tw_from)
     d = Dial(callerId=caller_for_dial)
     d.sip(sip_target)
     vr.append(d)
 
-    logging.warning(f"TRANSFER -> {sip_target} | callerId={caller_for_dial}")
+    logging.warning(f"TRANSFER -> {sip_target} | callerId={caller_for_dial} | srcFrom={tw_from}")
     return Response(str(vr), mimetype="text/xml")
 
-def llamar_openai(call_sid, user_text):
+def llamar_openai(call_sid: str, user_text: str) -> str:
     if not OPENAI_API_KEY:
         logging.error("[OPENAI] OPENAI_API_KEY VACIA")
         return "En este momento no tengo acceso al asistente inteligente. Lo comunico con soporte."
@@ -265,8 +295,6 @@ def ivr_llm():
         digits = request.values.get("Digits")
         call_sid = request.values.get("CallSid", "unknown")
 
-        # intentos:
-        # - noinput: reintentos por silencio total
         noinput = int(request.args.get("noinput", "1"))
 
         tw_from = request.values.get("From") or ""
@@ -287,6 +315,7 @@ def ivr_llm():
             f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} caller_real={caller_real or '(none)'} "
             f"Direction={direction} Status={call_status} noinput={noinput}"
         )
+
         if any(sip_headers.values()):
             logging.warning("[SIP_HEADERS] " + " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v]))
 
@@ -316,14 +345,14 @@ def ivr_llm():
 
             # muchos silencios -> NO colgar: mandar a soporte
             say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte para ayudarle.")
-            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
         # Normalizamos speech
         # =========================
         text = normalize(speech)
 
-        # Si speech es demasiado corto, reintentar (evita que se vaya a OpenAI por "hola")
+        # Si speech es demasiado corto, reintentar (evita que se vaya a OpenAI por 1 palabra)
         if speech and len(text.split()) <= 1 and digits is None:
             vr.pause(length=0.4)
             vr.append(gather_prompt("/ivr-llm?noinput=1", "Le escuché muy bajito. Dígame el nombre de la persona, por favor."))
@@ -332,54 +361,54 @@ def ivr_llm():
         logging.info(f"[CALL {call_sid}] speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
         # =========================
-        # DTMF routing
+        # DTMF routing (compatibilidad)
         # =========================
         if digits == "4000":
-            return transfer_to_user(vr, DID_MAP["pablo"], caller_real)
+            return transfer_to_user(vr, DID_MAP["pablo"], caller_real, tw_from)
         if digits == "4001":
-            return transfer_to_user(vr, DID_MAP["gonzalo"], caller_real)
+            return transfer_to_user(vr, DID_MAP["gonzalo"], caller_real, tw_from)
         if digits == "4002":
-            return transfer_to_user(vr, DID_MAP["vladimir"], caller_real)
+            return transfer_to_user(vr, DID_MAP["vladimir"], caller_real, tw_from)
         if digits == "4003":
-            return transfer_to_user(vr, DID_MAP["paola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["paola"], caller_real, tw_from)
         if digits == "4007":
-            return transfer_to_user(vr, DID_MAP["ximena"], caller_real)
+            return transfer_to_user(vr, DID_MAP["ximena"], caller_real, tw_from)
         if digits == "0":
-            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # Voice: soporte
+        # Voice: soporte (siempre)
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
-            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # Voice por nombre directo
+        # Voice directo por nombre
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in text:
-                return transfer_to_user(vr, DID_MAP[name], caller_real)
+                return transfer_to_user(vr, DID_MAP[name], caller_real, tw_from)
 
         # =========================
-        # Fuzzy match nombres
+        # Fuzzy match para nombres
         # =========================
         bm, score = detect_name_from_text(text)
         if bm and score >= 0.78:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
-            return transfer_to_user(vr, DID_MAP[bm], caller_real)
+            return transfer_to_user(vr, DID_MAP[bm], caller_real, tw_from)
 
         # =========================
         # humano/operador -> soporte
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
-            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # OpenAI fallback
+        # OpenAI fallback inteligente
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Para continuar, le comunico con soporte.")
-            return transfer_to_user(vr, DID_MAP["cola"], caller_real)
+            return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         llm_turns[call_sid] += 1
         respuesta = llamar_openai(call_sid, text)
@@ -392,7 +421,7 @@ def ivr_llm():
     except Exception as e:
         logging.exception(f"ERROR en /ivr-llm: {e}")
         say(vr, "Hubo un problema técnico. Le comunico con soporte.")
-        return transfer_to_user(vr, DID_MAP["cola"], "")
+        return transfer_to_user(vr, DID_MAP["cola"], "", "")
 
 # =========================
 # HOME
