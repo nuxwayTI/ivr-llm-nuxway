@@ -17,11 +17,17 @@ app = Flask(__name__)
 # =========================
 SIP_DOMAIN = "nuxway.sip.twilio.com"
 
-# ✅ Fallback callerId cuando NO hay caller real:
-# - externo: sip:ivr@dominio (válido en SIP)
-# - interno (cuando From es sip:6802@...): número interno fijo (evita cortes/hairpin)
+# ✅ Fallbacks cuando NO se puede preservar caller real
 DEFAULT_EXTERNAL_FALLBACK_CALLER = f"sip:ivr@{SIP_DOMAIN}"
-DEFAULT_INTERNAL_FALLBACK_CALLER = "5109"  # <-- si tu soporte/cola no es 5109, cambia aquí
+DEFAULT_INTERNAL_FALLBACK_CALLER = "5109"  # extensión "neutra" para llamadas internas
+
+# Heurística para distinguir interno vs externo cuando viene como sip:<digits>@dominio
+# - internos suelen ser 2 a 6 dígitos (ej 22, 6802, 5100)
+# - externos suelen ser 7 a 15 dígitos (ej 61786583, 591xxxxxxx)
+INTERNAL_EXT_MIN_LEN = 2
+INTERNAL_EXT_MAX_LEN = 6
+EXTERNAL_NUM_MIN_LEN = 7
+EXTERNAL_NUM_MAX_LEN = 15
 
 # =========================
 # RUTEO (destino SIP por interno)
@@ -32,7 +38,7 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "6049"   # ✅ soporte/cola
+    "cola": "6049"   # 👈 OJO: aquí tú lo cambiaste a 6049; déjalo como tengas soporte real
 }
 
 # =========================
@@ -71,13 +77,6 @@ Reglas:
 - No suenes robótico.
 - Si el usuario pide hablar con una persona específica (por nombre), transfiere con esa persona.
 - Si el usuario pide soporte o un ingeniero (genérico), transfiere a soporte.
-
-Información real (no inventar):
-- Web: nuxway punto net
-- Email: ventas@nuxway.net
-- Teléfono: (591-4) 448362
-- Celular: (591) 61786583
-- Dirección: Calle Las Jarkas #204, Zona Mirador, Cochabamba-Bolivia
 """
 
 # =========================
@@ -97,6 +96,10 @@ def similarity(a: str, b: str) -> float:
 def is_valid_e164(s: str) -> bool:
     return bool(re.fullmatch(r"\+\d{8,15}", (s or "").strip()))
 
+def is_valid_digits_number(s: str, min_len=2, max_len=15) -> bool:
+    s = (s or "").strip()
+    return bool(re.fullmatch(rf"\d{{{min_len},{max_len}}}", s))
+
 def build_sip_uri(user: str) -> str:
     user = (user or "").strip()
     return f"sip:{user}@{SIP_DOMAIN}"
@@ -107,42 +110,73 @@ def extract_e164(text: str) -> str:
     m = re.search(r"\+\d{8,15}", text)
     return m.group(0) if m else ""
 
+def extract_digits_from_sip_from(tw_from: str) -> str:
+    """
+    Extrae dígitos de:
+      sip:61786583@nuxway.sip.twilio.com
+      sip:22@nuxway.sip.twilio.com:5060;transport=UDP
+    Retorna solo el user numérico (si aplica).
+    """
+    if not tw_from:
+        return ""
+    m = re.search(r"^sip:(\d+)@", tw_from.strip(), re.IGNORECASE)
+    return m.group(1) if m else ""
+
 def get_original_caller(tw_from: str, sip_headers: dict) -> str:
     """
-    Devuelve caller real en E.164 si lo encuentra.
+    Devuelve caller "real" si lo encuentra.
+
     Prioridad:
-      1) From (si ya viene +E164)
-      2) Headers PAI/RPID/X-Original-Caller/X-ANI
+      1) +E164 en From
+      2) +E164 en headers PAI/RPID/X-Original-Caller/X-ANI
+      3) Si From viene como sip:<digits>@...:
+         - si digits parece número externo (>=7) => devolver digits
+         - si digits parece interno (<=6) => devolver "" (no es caller real)
     """
+    # 1) From trae +E164
     num = extract_e164(tw_from)
     if is_valid_e164(num):
         return num
 
+    # 2) Headers (si tu PBX los manda)
     for k in ["P-Asserted-Identity", "Remote-Party-ID", "X-Original-Caller", "X-ANI"]:
         num = extract_e164(sip_headers.get(k, ""))
         if is_valid_e164(num):
             return num
 
-    return ""
+    # 3) From como sip:<digits>@...
+    digits = extract_digits_from_sip_from(tw_from)
+    if is_valid_digits_number(digits, EXTERNAL_NUM_MIN_LEN, EXTERNAL_NUM_MAX_LEN):
+        return digits  # ✅ caller externo numérico sin +
+
+    return ""  # no hay caller preservable
 
 def is_internal_sip_from(tw_from: str) -> bool:
     """
-    True si la llamada viene desde un usuario SIP del mismo dominio:
-      sip:6802@nuxway.sip.twilio.com
-      sip:5100@nuxway.sip.twilio.com;transport=UDP
+    True solo si viene como sip:<digits>@dominio y esos dígitos parecen extensión corta.
+    Ej:
+      sip:6802@nuxway.sip.twilio.com  => interno
+      sip:22@nuxway...                => interno
+      sip:61786583@nuxway...          => externo (NO interno)
     """
-    tw_from = (tw_from or "").strip()
-    return bool(re.match(rf"^sip:\d+@{re.escape(SIP_DOMAIN)}(\b|;)", tw_from, re.IGNORECASE))
+    digits = extract_digits_from_sip_from(tw_from)
+    return is_valid_digits_number(digits, INTERNAL_EXT_MIN_LEN, INTERNAL_EXT_MAX_LEN)
 
-def choose_caller_for_transfer(caller_real_e164: str, tw_from: str) -> str:
+def choose_caller_for_transfer(caller_real: str, tw_from: str) -> str:
     """
     callerId para el Dial SIP:
-      - si hay +E164 real -> úsalo
-      - si viene de interno SIP -> usa número interno fijo (evita cortes/hairpin)
-      - si no -> usa SIP caller válido fijo
+
+    - si caller_real es +E164 => usarlo
+    - si caller_real es numérico largo (7-15) => usarlo (preserva caller sin +)
+    - si NO hay caller_real:
+        - si la llamada viene de interno => usar DEFAULT_INTERNAL_FALLBACK_CALLER (5109)
+        - si no => DEFAULT_EXTERNAL_FALLBACK_CALLER (sip:ivr@...)
     """
-    if caller_real_e164 and is_valid_e164(caller_real_e164):
-        return caller_real_e164
+    if caller_real and is_valid_e164(caller_real):
+        return caller_real
+
+    if caller_real and is_valid_digits_number(caller_real, EXTERNAL_NUM_MIN_LEN, EXTERNAL_NUM_MAX_LEN):
+        return caller_real
 
     if is_internal_sip_from(tw_from):
         return DEFAULT_INTERNAL_FALLBACK_CALLER
@@ -198,21 +232,21 @@ def gather_prompt(action_url: str, prompt_text: str):
     say(g, prompt_text)
     return g
 
-def transfer_to_user(vr, target_user: str, caller_real_e164: str, tw_from: str):
+def transfer_to_user(vr, target_user: str, caller_real: str, tw_from: str):
     """
     Transfiere a sip:<target_user>@nuxway.sip.twilio.com
-    y setea callerId robusto para evitar cortes en llamadas internas (sip:6802@...).
+    preservando caller real cuando sea posible.
     """
     sip_target = build_sip_uri(target_user)
 
     say(vr, "Perfecto, le comunico.")
 
-    caller_for_dial = choose_caller_for_transfer(caller_real_e164, tw_from)
+    caller_for_dial = choose_caller_for_transfer(caller_real, tw_from)
     d = Dial(callerId=caller_for_dial)
     d.sip(sip_target)
     vr.append(d)
 
-    logging.warning(f"TRANSFER -> {sip_target} | callerId={caller_for_dial} | srcFrom={tw_from}")
+    logging.warning(f"TRANSFER -> {sip_target} | callerId={caller_for_dial} | srcFrom={tw_from} | caller_real={caller_real or '(none)'}")
     return Response(str(vr), mimetype="text/xml")
 
 def llamar_openai(call_sid: str, user_text: str) -> str:
@@ -294,7 +328,6 @@ def ivr_llm():
         speech = request.values.get("SpeechResult")
         digits = request.values.get("Digits")
         call_sid = request.values.get("CallSid", "unknown")
-
         noinput = int(request.args.get("noinput", "1"))
 
         tw_from = request.values.get("From") or ""
@@ -315,9 +348,6 @@ def ivr_llm():
             f"[TWILIO] CallSid={call_sid} From={tw_from} To={tw_to} caller_real={caller_real or '(none)'} "
             f"Direction={direction} Status={call_status} noinput={noinput}"
         )
-
-        if any(sip_headers.values()):
-            logging.warning("[SIP_HEADERS] " + " | ".join([f"{k}={v}" for k, v in sip_headers.items() if v]))
 
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
@@ -343,8 +373,7 @@ def ivr_llm():
                 vr.append(gather_prompt(f"/ivr-llm?noinput={noinput+1}", prompt))
                 return Response(str(vr), mimetype="text/xml")
 
-            # muchos silencios -> NO colgar: mandar a soporte
-            say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte para ayudarle.")
+            say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte.")
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
@@ -352,7 +381,6 @@ def ivr_llm():
         # =========================
         text = normalize(speech)
 
-        # Si speech es demasiado corto, reintentar (evita que se vaya a OpenAI por 1 palabra)
         if speech and len(text.split()) <= 1 and digits is None:
             vr.pause(length=0.4)
             vr.append(gather_prompt("/ivr-llm?noinput=1", "Le escuché muy bajito. Dígame el nombre de la persona, por favor."))
@@ -404,7 +432,7 @@ def ivr_llm():
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # OpenAI fallback inteligente
+        # OpenAI fallback
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Para continuar, le comunico con soporte.")
@@ -433,6 +461,7 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
