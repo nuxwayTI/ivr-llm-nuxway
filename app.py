@@ -28,7 +28,7 @@ EXTERNAL_NUM_MIN_LEN = 7
 EXTERNAL_NUM_MAX_LEN = 15
 
 # =========================
-# RUTEO (DESTINO SIP POR INTERNO)
+# RUTEO (destino SIP por interno)
 # =========================
 DID_MAP = {
     "pablo": "5100",
@@ -36,7 +36,7 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "6049"   # soporte/cola (deja como lo tienes)
+    "cola": "6049"   # soporte/cola (deja como lo tengas)
 }
 
 # =========================
@@ -49,9 +49,8 @@ SPEECH_TIMEOUT = "auto"
 MAX_NOINPUT_ATTEMPTS = 3
 MAX_LLM_TURNS = 3
 
-# Umbrales de STT
-MIN_CONFIDENCE_REPROMPT = 0.35  # si Twilio manda Confidence y es baja, repreguntamos
-MIN_TEXT_LEN_REPROMPT = 2       # si SpeechResult llega vacío o casi vacío
+# Umbrales STT
+MIN_CONFIDENCE_REPROMPT = 0.35
 
 # =========================
 # OPENAI
@@ -82,7 +81,7 @@ Reglas:
 
 Información (empresa):
 - Nuxway es distribuidor oficial de Yeastar.
-- Vendemos equipos Yeastar y configuramos servidores de comunicaciones unificadas.
+- Vendemos equipos Yeastar y configuramos servidores de comunicaciones unificadas:
   - Yeastar Serie P y Yeastar Serie S.
   - Soluciones Cloud y On-Premise.
   - Referencia: yeastar.com
@@ -112,6 +111,8 @@ def say(vr, text: str):
 def normalize(text: str) -> str:
     text = (text or "").lower().strip()
     text = re.sub(r"[^a-záéíóúñ0-9 ]+", "", text)
+    # colapsar espacios
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 def similarity(a: str, b: str) -> float:
@@ -135,24 +136,38 @@ def extract_e164(text: str) -> str:
     return m.group(0) if m else ""
 
 def extract_digits_from_sip_from(tw_from: str) -> str:
+    """
+    Extrae dígitos de:
+      sip:61786583@nuxway.sip.twilio.com
+      sip:22@nuxway.sip.twilio.com:5060;transport=UDP
+    Retorna solo el user numérico (si aplica).
+    """
     if not tw_from:
         return ""
     m = re.search(r"^sip:(\d+)@", tw_from.strip(), re.IGNORECASE)
     return m.group(1) if m else ""
 
 def get_original_caller(tw_from: str, sip_headers: dict) -> str:
+    """
+    Devuelve caller "real" si lo encuentra.
+
+    Prioridad:
+      1) +E164 en From
+      2) +E164 en headers PAI/RPID/X-Original-Caller/X-ANI
+      3) sip:<digits>@... si digits parece número externo (>=7) => devolver digits
+    """
     # 1) From trae +E164
     num = extract_e164(tw_from)
     if is_valid_e164(num):
         return num
 
-    # 2) Headers con +E164 (si tu PBX los manda)
+    # 2) Headers (si tu PBX los manda)
     for k in ["P-Asserted-Identity", "Remote-Party-ID", "X-Original-Caller", "X-ANI"]:
         num = extract_e164(sip_headers.get(k, ""))
         if is_valid_e164(num):
             return num
 
-    # 3) From como sip:<digits>@... (sin +)
+    # 3) From como sip:<digits>@...
     digits = extract_digits_from_sip_from(tw_from)
     if is_valid_digits_number(digits, EXTERNAL_NUM_MIN_LEN, EXTERNAL_NUM_MAX_LEN):
         return digits
@@ -160,30 +175,89 @@ def get_original_caller(tw_from: str, sip_headers: dict) -> str:
     return ""
 
 def is_internal_sip_from(tw_from: str) -> bool:
+    """
+    True solo si viene como sip:<digits>@dominio y esos dígitos parecen extensión corta.
+    Ej:
+      sip:6802@nuxway...  => interno
+      sip:22@nuxway...    => interno
+      sip:61786583@...    => externo
+    """
     digits = extract_digits_from_sip_from(tw_from)
     return is_valid_digits_number(digits, INTERNAL_EXT_MIN_LEN, INTERNAL_EXT_MAX_LEN)
 
 def choose_caller_for_transfer(caller_real: str, tw_from: str) -> str:
-    # caller real en +E164
+    """
+    callerId para el Dial SIP:
+    - si caller_real es +E164 => usarlo
+    - si caller_real es numérico largo (7-15) => usarlo
+    - si NO hay caller_real:
+        - si viene de interno => DEFAULT_INTERNAL_FALLBACK_CALLER
+        - si no => DEFAULT_EXTERNAL_FALLBACK_CALLER
+    """
     if caller_real and is_valid_e164(caller_real):
         return caller_real
 
-    # caller real numérico largo (ej 61786583)
     if caller_real and is_valid_digits_number(caller_real, EXTERNAL_NUM_MIN_LEN, EXTERNAL_NUM_MAX_LEN):
         return caller_real
 
-    # si viene de interno -> número fijo (evita cortes/hairpin)
     if is_internal_sip_from(tw_from):
         return DEFAULT_INTERNAL_FALLBACK_CALLER
 
-    # externo sin caller real -> sip fijo
     return DEFAULT_EXTERNAL_FALLBACK_CALLER
+
+# =========================
+# INTELIGENCIA EXTRA PARA GSM:
+# - hints (sesga STT a tus nombres)
+# - parser de frases tipo "con pablo por favor"
+# =========================
+SPEECH_HINTS = [
+    "pablo", "gonzalo", "vladimir", "paola", "ximena",
+    "soporte", "ayuda", "técnico", "tecnico", "mesa", "operador",
+    "con pablo", "con gonzalo", "con vladimir", "con paola", "con ximena",
+    "comunicame con pablo", "comunícame con pablo",
+    "comunicame con vladimir", "comunícame con vladimir",
+    "quiero hablar con pablo", "quiero hablar con vladimir",
+    "hablar con pablo", "hablar con vladimir",
+]
+
+FILLER_WORDS = {
+    "con", "por", "favor", "porfa", "porfavor",
+    "quiero", "hablar", "hable", "comunicarme", "comunicame", "comunícame",
+    "me", "puede", "podria", "podría", "deseo", "para", "el", "la", "al", "a",
+    "por", "fa"
+}
+
+def clean_for_name(text: str) -> str:
+    words = (text or "").split()
+    words = [w for w in words if w and w not in FILLER_WORDS]
+    return " ".join(words).strip()
+
+def extract_name_candidate(text: str) -> str:
+    """
+    Extrae posible nombre de frases:
+      - "con pablo por favor"
+      - "comunicame con vladimir"
+      - "quiero hablar con paola"
+    Si no, devuelve texto limpio.
+    """
+    t = (text or "").strip()
+
+    patterns = [
+        r"(?:quiero\s+hablar|hablar|hable|comunicarme|comunicame|comunícame)\s+con\s+(.+)$",
+        r"(?:con)\s+(.+)$",
+    ]
+    for p in patterns:
+        m = re.search(p, t)
+        if m:
+            return clean_for_name(m.group(1))
+
+    return clean_for_name(t)
 
 # ✅ Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
-    "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir"],
+    "vladimir": ["vladimir", "bladimir", "pladimir", "vlad", "vladimír", "vladmir", "vladmirr"],
     "paola": ["paola", "paula", "pa ola", "pau la", "pao la", "paolla"],
     "ximena": ["ximena", "xime", "xime na", "xi mena", "xim ena", "ximen a"],
 }
@@ -215,9 +289,9 @@ def saludo_por_hora():
 
 def gather_prompt(action_url: str, prompt_text: str):
     """
-    ✅ Mejoras de escucha:
-    - speech_model phone_call + enhanced True
-    - timeout 15 y speech_timeout auto
+    ✅ Mejora GSM/STT:
+    - phone_call + enhanced
+    - hints con nombres/frases típicas
     """
     g = Gather(
         input="dtmf speech",
@@ -230,14 +304,21 @@ def gather_prompt(action_url: str, prompt_text: str):
         bargeIn=True,
         action_on_empty_result=True,
 
-        # 👇 Mejora STT en llamadas telefónicas
+        # STT tuning
         speech_model="phone_call",
         enhanced=True,
+
+        # Bias hacia nombres
+        hints=",".join(SPEECH_HINTS),
     )
     say(g, prompt_text)
     return g
 
 def transfer_to_user(vr, target_user: str, caller_real: str, tw_from: str):
+    """
+    Transfiere a sip:<target_user>@nuxway.sip.twilio.com
+    preservando caller real cuando sea posible.
+    """
     sip_target = build_sip_uri(target_user)
     say(vr, "Perfecto, le comunico.")
 
@@ -376,37 +457,43 @@ def ivr_llm():
                 else:
                     prompt = (
                         "Disculpe, no le escuché bien. "
-                        "Diga el nombre de la persona, o marque cero para soporte."
+                        "Para transferirle, dígame solo el nombre: Pablo, Gonzalo, Vladimir, Paola o Ximena. "
+                        "O marque cero para soporte."
                     )
 
                 vr.append(gather_prompt(f"/ivr-llm?noinput={noinput+1}", prompt))
                 return Response(str(vr), mimetype="text/xml")
 
-            # muchos silencios -> mandar a soporte
             say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte.")
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # Normalizamos speech
+        # Normalizamos speech + candidato de nombre
         # =========================
         text = normalize(speech)
+        name_candidate = extract_name_candidate(text)
 
-        # ✅ Si Twilio mandó confidence baja, repreguntamos (más humano, sin “muy bajito”)
+        logging.info(f"[PARSE] raw='{text}' candidate='{name_candidate}'")
+
+        # Si Twilio entendió algo muy pobre (confidence baja), repregunta sin fastidiar
         if speech and digits is None and confidence is not None and confidence < MIN_CONFIDENCE_REPROMPT:
             vr.pause(length=0.4)
             vr.append(gather_prompt("/ivr-llm?noinput=1", "Disculpe, no le entendí bien. Dígame el nombre otra vez, por favor."))
             return Response(str(vr), mimetype="text/xml")
 
-        # ✅ Si speech llegó pero quedó vacío/insuficiente tras normalizar
-        if speech and digits is None and (not text or len(text) < MIN_TEXT_LEN_REPROMPT):
-            vr.pause(length=0.4)
-            vr.append(gather_prompt("/ivr-llm?noinput=1", "Disculpe, no le escuché bien. Dígame el nombre, por favor."))
+        # Si solo capturó "con" o quedó vacío el candidato, pide solo el nombre
+        if speech and digits is None and name_candidate == "":
+            vr.pause(length=0.3)
+            vr.append(gather_prompt(
+                "/ivr-llm?noinput=1",
+                "Para transferirle, dígame solo el nombre: Pablo, Gonzalo, Vladimir, Paola o Ximena."
+            ))
             return Response(str(vr), mimetype="text/xml")
 
-        logging.info(f"[CALL {call_sid}] speech='{text}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
+        logging.info(f"[CALL {call_sid}] speech='{text}' candidate='{name_candidate}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
         # =========================
-        # 1) DTMF routing
+        # DTMF routing
         # =========================
         if digits == "4000":
             return transfer_to_user(vr, DID_MAP["pablo"], caller_real, tw_from)
@@ -422,34 +509,34 @@ def ivr_llm():
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # 2) Voice: soporte
+        # Voice: soporte (siempre)
         # =========================
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # 3) Voice directo por nombre
+        # Voice directo por nombre (sobre candidato)
         # =========================
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
-            if name in text:
+            if name in name_candidate:
                 return transfer_to_user(vr, DID_MAP[name], caller_real, tw_from)
 
         # =========================
-        # 4) Fuzzy match nombres
+        # Fuzzy match sobre candidato
         # =========================
-        bm, score = detect_name_from_text(text)
-        if bm and score >= 0.78:
-            logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{text}' => '{bm}' score={score:.2f}")
+        bm, score = detect_name_from_text(name_candidate)
+        if bm and score >= 0.75:  # un poco más tolerante para GSM
+            logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{name_candidate}' => '{bm}' score={score:.2f}")
             return transfer_to_user(vr, DID_MAP[bm], caller_real, tw_from)
 
         # =========================
-        # 4.1) humano/operador -> soporte
+        # humano/operador -> soporte
         # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
         # =========================
-        # 5) OpenAI fallback
+        # OpenAI fallback
         # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Para continuar, le comunico con soporte.")
