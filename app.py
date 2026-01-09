@@ -525,7 +525,7 @@ def ivr_llm():
         # Fuzzy match sobre candidato
         # =========================
         bm, score = detect_name_from_text(name_candidate)
-        if bm and score >= 0.75:  # un poco más tolerante para GSM
+        if bm and score >= 0.72:  # un poco más tolerante para GSM
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{name_candidate}' => '{bm}' score={score:.2f}")
             return transfer_to_user(vr, DID_MAP[bm], caller_real, tw_from)
 
