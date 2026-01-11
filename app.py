@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, url_for
 from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 import os
 import logging
@@ -8,20 +8,34 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 from datetime import datetime
 import pytz
+import time
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # =========================
+# CONFIG (ENV)
+# =========================
+# Base URL público de Render, ej:
+# https://tu-servicio.onrender.com
+BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
+
+# Voz / idioma TTS
+TTS_LANGUAGE = os.getenv("TTS_LANGUAGE", "es-MX").strip()
+TTS_VOICE = os.getenv("TTS_VOICE", "Polly.Andres-Neural").strip()  # mejor calidad
+TTS_USE_SSML = os.getenv("TTS_USE_SSML", "0").strip() == "1"
+
+# Memoria TTL (segundos). 20 min por defecto.
+MEM_TTL_SECONDS = int(os.getenv("MEM_TTL_SECONDS", "1200"))
+
+# =========================
 # TWILIO SIP DOMAIN
 # =========================
-SIP_DOMAIN = "nuxway.sip.twilio.com"
+SIP_DOMAIN = os.getenv("SIP_DOMAIN", "nuxway.sip.twilio.com").strip()
 
-# ✅ Fallbacks cuando NO se puede preservar caller real
 DEFAULT_EXTERNAL_FALLBACK_CALLER = f"sip:ivr@{SIP_DOMAIN}"
-DEFAULT_INTERNAL_FALLBACK_CALLER = "5109"  # extensión "neutra" para llamadas internas
+DEFAULT_INTERNAL_FALLBACK_CALLER = os.getenv("DEFAULT_INTERNAL_FALLBACK_CALLER", "5109").strip()
 
-# Heurística para distinguir interno vs externo cuando viene como sip:<digits>@dominio
 INTERNAL_EXT_MIN_LEN = 2
 INTERNAL_EXT_MAX_LEN = 6
 EXTERNAL_NUM_MIN_LEN = 7
@@ -36,7 +50,7 @@ DID_MAP = {
     "vladimir": "5102",
     "paola": "5103",
     "ximena": "5104",
-    "cola": "6049"   # soporte/cola (deja como lo tengas)
+    "cola": "6049"
 }
 
 # =========================
@@ -48,15 +62,13 @@ GATHER_TIMEOUT = 15
 SPEECH_TIMEOUT = "auto"
 MAX_NOINPUT_ATTEMPTS = 3
 MAX_LLM_TURNS = 3
-
-# Umbrales STT
 MIN_CONFIDENCE_REPROMPT = 0.35
 
 # =========================
 # OPENAI
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_URL = os.getenv("OPENAI_URL", "https://api.openai.com/v1/chat/completions").strip()
 session = requests.Session()
 
 # =========================
@@ -64,11 +76,25 @@ session = requests.Session()
 # =========================
 conversaciones = defaultdict(list)
 llm_turns = defaultdict(int)
+last_seen = defaultdict(lambda: 0.0)  # TTL
+
+def touch_call(call_sid: str):
+    last_seen[call_sid] = time.time()
+
+def gc_memory():
+    now = time.time()
+    dead = [sid for sid, ts in last_seen.items() if now - ts > MEM_TTL_SECONDS]
+    for sid in dead:
+        conversaciones.pop(sid, None)
+        llm_turns.pop(sid, None)
+        last_seen.pop(sid, None)
+    if dead:
+        logging.info(f"[GC] cleaned {len(dead)} call sessions")
 
 # =========================
-# PROMPT SISTEMA (Nuxway) - ORDENADO
+# PROMPT SISTEMA (ENV override)
 # =========================
-SYSTEM_PROMPT = """
+DEFAULT_SYSTEM_PROMPT = """
 Eres el asistente telefónico de Nuxway Technology S.R.L.
 Atiendes llamadas en español, tono profesional y humano, estilo IVR moderno.
 
@@ -100,18 +126,31 @@ Si el usuario pregunta “qué hacen” o “servicios”:
 
 Si no estás seguro:
 - “Para darle una respuesta correcta, prefiero comunicarlo con soporte.”
-"""
+""".strip()
+
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT).strip()
 
 # =========================
 # HELPERS
 # =========================
+def _maybe_ssml(text: str) -> str:
+    if not TTS_USE_SSML:
+        return text
+    # SSML suave para teléfono (más claro)
+    # Nota: Twilio suele aceptar SSML en <Say> con voces compatibles.
+    safe = (text or "").replace("&", "y")
+    return (
+        f'<speak>'
+        f'<prosody rate="92%" volume="+2dB">{safe}</prosody>'
+        f'</speak>'
+    )
+
 def say(vr, text: str):
-    vr.say(text, language="es-MX", voice="Polly.Mia")
+    vr.say(_maybe_ssml(text), language=TTS_LANGUAGE, voice=TTS_VOICE)
 
 def normalize(text: str) -> str:
     text = (text or "").lower().strip()
     text = re.sub(r"[^a-záéíóúñ0-9 ]+", "", text)
-    # colapsar espacios
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -136,38 +175,21 @@ def extract_e164(text: str) -> str:
     return m.group(0) if m else ""
 
 def extract_digits_from_sip_from(tw_from: str) -> str:
-    """
-    Extrae dígitos de:
-      sip:61786583@nuxway.sip.twilio.com
-      sip:22@nuxway.sip.twilio.com:5060;transport=UDP
-    Retorna solo el user numérico (si aplica).
-    """
     if not tw_from:
         return ""
     m = re.search(r"^sip:(\d+)@", tw_from.strip(), re.IGNORECASE)
     return m.group(1) if m else ""
 
 def get_original_caller(tw_from: str, sip_headers: dict) -> str:
-    """
-    Devuelve caller "real" si lo encuentra.
-
-    Prioridad:
-      1) +E164 en From
-      2) +E164 en headers PAI/RPID/X-Original-Caller/X-ANI
-      3) sip:<digits>@... si digits parece número externo (>=7) => devolver digits
-    """
-    # 1) From trae +E164
     num = extract_e164(tw_from)
     if is_valid_e164(num):
         return num
 
-    # 2) Headers (si tu PBX los manda)
     for k in ["P-Asserted-Identity", "Remote-Party-ID", "X-Original-Caller", "X-ANI"]:
         num = extract_e164(sip_headers.get(k, ""))
         if is_valid_e164(num):
             return num
 
-    # 3) From como sip:<digits>@...
     digits = extract_digits_from_sip_from(tw_from)
     if is_valid_digits_number(digits, EXTERNAL_NUM_MIN_LEN, EXTERNAL_NUM_MAX_LEN):
         return digits
@@ -175,25 +197,10 @@ def get_original_caller(tw_from: str, sip_headers: dict) -> str:
     return ""
 
 def is_internal_sip_from(tw_from: str) -> bool:
-    """
-    True solo si viene como sip:<digits>@dominio y esos dígitos parecen extensión corta.
-    Ej:
-      sip:6802@nuxway...  => interno
-      sip:22@nuxway...    => interno
-      sip:61786583@...    => externo
-    """
     digits = extract_digits_from_sip_from(tw_from)
     return is_valid_digits_number(digits, INTERNAL_EXT_MIN_LEN, INTERNAL_EXT_MAX_LEN)
 
 def choose_caller_for_transfer(caller_real: str, tw_from: str) -> str:
-    """
-    callerId para el Dial SIP:
-    - si caller_real es +E164 => usarlo
-    - si caller_real es numérico largo (7-15) => usarlo
-    - si NO hay caller_real:
-        - si viene de interno => DEFAULT_INTERNAL_FALLBACK_CALLER
-        - si no => DEFAULT_EXTERNAL_FALLBACK_CALLER
-    """
     if caller_real and is_valid_e164(caller_real):
         return caller_real
 
@@ -206,9 +213,7 @@ def choose_caller_for_transfer(caller_real: str, tw_from: str) -> str:
     return DEFAULT_EXTERNAL_FALLBACK_CALLER
 
 # =========================
-# INTELIGENCIA EXTRA PARA GSM:
-# - hints (sesga STT a tus nombres)
-# - parser de frases tipo "con pablo por favor"
+# SPEECH HINTS / PARSER
 # =========================
 SPEECH_HINTS = [
     "pablo", "gonzalo", "vladimir", "paola", "ximena",
@@ -233,15 +238,7 @@ def clean_for_name(text: str) -> str:
     return " ".join(words).strip()
 
 def extract_name_candidate(text: str) -> str:
-    """
-    Extrae posible nombre de frases:
-      - "con pablo por favor"
-      - "comunicame con vladimir"
-      - "quiero hablar con paola"
-    Si no, devuelve texto limpio.
-    """
     t = (text or "").strip()
-
     patterns = [
         r"(?:quiero\s+hablar|hablar|hable|comunicarme|comunicame|comunícame)\s+con\s+(.+)$",
         r"(?:con)\s+(.+)$",
@@ -250,10 +247,8 @@ def extract_name_candidate(text: str) -> str:
         m = re.search(p, t)
         if m:
             return clean_for_name(m.group(1))
-
     return clean_for_name(t)
 
-# ✅ Alias nombres
 NAME_ALIASES = {
     "pablo": ["pablo", "pavlo", "pabloo", "palo", "pabloh"],
     "gonzalo": ["gonzalo", "gonza", "gonsalo", "consalo", "gonzal", "gonzaloz"],
@@ -267,7 +262,6 @@ def detect_name_from_text(text: str):
     candidates = words + [text]
     best_name = None
     best_score = 0.0
-
     for name, aliases in NAME_ALIASES.items():
         for alias in aliases:
             for c in candidates:
@@ -275,7 +269,6 @@ def detect_name_from_text(text: str):
                 if score > best_score:
                     best_score = score
                     best_name = name
-
     return best_name, best_score
 
 def saludo_por_hora():
@@ -287,43 +280,37 @@ def saludo_por_hora():
         return "Buenas tardes."
     return "Buenas noches."
 
+def _abs_url(path: str) -> str:
+    # Si BASE_URL existe, forma URL absoluta para Twilio (más confiable).
+    if BASE_URL:
+        return f"{BASE_URL}{path if path.startswith('/') else '/' + path}"
+    return path
+
 def gather_prompt(action_url: str, prompt_text: str):
-    """
-    ✅ Mejora GSM/STT:
-    - phone_call + enhanced
-    - hints con nombres/frases típicas
-    """
     g = Gather(
         input="dtmf speech",
-        num_digits=4,
+        num_digits=4,  # ✅ ya lo cambiaste
         language="es-MX",
         timeout=GATHER_TIMEOUT,
         speech_timeout=SPEECH_TIMEOUT,
-        action=action_url,
+        action=_abs_url(action_url),
         method="POST",
-        bargeIn=True,
+        barge_in=True,
         action_on_empty_result=True,
 
-        # STT tuning
         speech_model="phone_call",
         enhanced=True,
-
-        # Bias hacia nombres
         hints=",".join(SPEECH_HINTS),
     )
     say(g, prompt_text)
     return g
 
 def transfer_to_user(vr, target_user: str, caller_real: str, tw_from: str):
-    """
-    Transfiere a sip:<target_user>@nuxway.sip.twilio.com
-    preservando caller real cuando sea posible.
-    """
     sip_target = build_sip_uri(target_user)
     say(vr, "Perfecto, le comunico.")
 
     caller_for_dial = choose_caller_for_transfer(caller_real, tw_from)
-    d = Dial(callerId=caller_for_dial)
+    d = Dial(caller_id=caller_for_dial)
     d.sip(sip_target)
     vr.append(d)
 
@@ -344,7 +331,7 @@ def llamar_openai(call_sid: str, user_text: str) -> str:
     messages.append({"role": "user", "content": user_text})
 
     data = {
-        "model": "gpt-4.1-mini",
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         "messages": messages,
         "max_tokens": 140,
         "temperature": 0.25,
@@ -381,7 +368,7 @@ def test_openai():
 
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
-        "model": "gpt-4.1-mini",
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         "messages": [
             {"role": "system", "content": "Responde solo con 'OK'."},
             {"role": "user", "content": "test"}
@@ -404,6 +391,8 @@ def ivr_llm():
     vr = VoiceResponse()
 
     try:
+        gc_memory()
+
         if request.method == "GET":
             say(vr, "IVR OK.")
             return Response(str(vr), mimetype="text/xml")
@@ -413,6 +402,8 @@ def ivr_llm():
         confidence_raw = request.values.get("Confidence")
         call_sid = request.values.get("CallSid", "unknown")
         noinput = int(request.args.get("noinput", "1"))
+
+        touch_call(call_sid)
 
         tw_from = request.values.get("From") or ""
         tw_to = request.values.get("To") or ""
@@ -428,7 +419,6 @@ def ivr_llm():
 
         caller_real = get_original_caller(tw_from, sip_headers)
 
-        # parse confidence
         try:
             confidence = float(confidence_raw) if confidence_raw is not None else None
         except:
@@ -441,9 +431,7 @@ def ivr_llm():
         logging.info(f"[STT] SpeechResult='{speech}' Confidence={confidence}")
         logging.warning(f"[DTMF] digits recibido: {digits}")
 
-        # =========================
-        # SILENCIO: reintenta sin colgar rápido
-        # =========================
+        # SILENCIO
         if not speech and not digits:
             if noinput <= MAX_NOINPUT_ATTEMPTS:
                 vr.pause(length=RETRY_PAUSE_SEC if noinput > 1 else INITIAL_PAUSE_SEC)
@@ -467,21 +455,16 @@ def ivr_llm():
             say(vr, "Parece que la llamada está con poco audio. Le comunico con soporte.")
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
-        # =========================
         # Normalizamos speech + candidato de nombre
-        # =========================
         text = normalize(speech)
         name_candidate = extract_name_candidate(text)
-
         logging.info(f"[PARSE] raw='{text}' candidate='{name_candidate}'")
 
-        # Si Twilio entendió algo muy pobre (confidence baja), repregunta sin fastidiar
         if speech and digits is None and confidence is not None and confidence < MIN_CONFIDENCE_REPROMPT:
             vr.pause(length=0.4)
             vr.append(gather_prompt("/ivr-llm?noinput=1", "Disculpe, no le entendí bien. Dígame el nombre otra vez, por favor."))
             return Response(str(vr), mimetype="text/xml")
 
-        # Si solo capturó "con" o quedó vacío el candidato, pide solo el nombre
         if speech and digits is None and name_candidate == "":
             vr.pause(length=0.3)
             vr.append(gather_prompt(
@@ -492,9 +475,7 @@ def ivr_llm():
 
         logging.info(f"[CALL {call_sid}] speech='{text}' candidate='{name_candidate}' digits='{digits}' llm_turns={llm_turns[call_sid]}")
 
-        # =========================
         # DTMF routing
-        # =========================
         if digits == "4000":
             return transfer_to_user(vr, DID_MAP["pablo"], caller_real, tw_from)
         if digits == "4001":
@@ -508,36 +489,26 @@ def ivr_llm():
         if digits == "0":
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
-        # =========================
-        # Voice: soporte (siempre)
-        # =========================
+        # Voice: soporte
         if any(k in text for k in ["soporte", "support", "ayuda", "mesa", "tecnico", "técnico", "cola"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
-        # =========================
-        # Voice directo por nombre (sobre candidato)
-        # =========================
+        # Voice directo por nombre
         for name in ["pablo", "gonzalo", "vladimir", "paola", "ximena"]:
             if name in name_candidate:
                 return transfer_to_user(vr, DID_MAP[name], caller_real, tw_from)
 
-        # =========================
-        # Fuzzy match sobre candidato
-        # =========================
+        # Fuzzy match
         bm, score = detect_name_from_text(name_candidate)
-        if bm and score >= 0.72:  # un poco más tolerante para GSM
+        if bm and score >= 0.72:
             logging.warning(f"[CALL {call_sid}] FUZZY_NAME -> '{name_candidate}' => '{bm}' score={score:.2f}")
             return transfer_to_user(vr, DID_MAP[bm], caller_real, tw_from)
 
-        # =========================
         # humano/operador -> soporte
-        # =========================
         if any(k in text for k in ["ingeniero", "agente", "humano", "operador"]):
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
 
-        # =========================
         # OpenAI fallback
-        # =========================
         if llm_turns[call_sid] >= MAX_LLM_TURNS:
             say(vr, "Para continuar, le comunico con soporte.")
             return transfer_to_user(vr, DID_MAP["cola"], caller_real, tw_from)
@@ -555,14 +526,10 @@ def ivr_llm():
         say(vr, "Hubo un problema técnico. Le comunico con soporte.")
         return transfer_to_user(vr, DID_MAP["cola"], "", "")
 
-# =========================
-# HOME
-# =========================
 @app.route("/", methods=["GET"])
 def home():
     return "OK"
 
 if __name__ == "__main__":
-    # En Render se usa gunicorn (Procfile), pero esto sirve local.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
