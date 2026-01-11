@@ -295,7 +295,7 @@ def gather_prompt(action_url: str, prompt_text: str):
     """
     g = Gather(
         input="dtmf speech",
-        num_digits=1,
+        num_digits=4,
         language="es-MX",
         timeout=GATHER_TIMEOUT,
         speech_timeout=SPEECH_TIMEOUT,
